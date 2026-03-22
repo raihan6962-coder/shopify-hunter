@@ -90,29 +90,25 @@ def log(message, level="INFO"):
 
 # ── Payment gateway detection ─────────────────────────────────────────────────
 PAYMENT_STRONG = [
-    'shopify_payments', 'shop_pay', 'shopify-pay', 'shop-pay',
-    'paypal.com/sdk', 'paypal.com/js', 'stripe.com/v3', 'stripe.js',
-    'klarna', 'afterpay', 'clearpay', 'affirm.com', 'sezzle',
-    'quadpay', 'amazon_payments', 'apple_pay', 'google_pay',
-    'data-payment-button', '"payment_gateway"', "'payment_gateway'",
-    'payment-gateway', 'payment_method',
-]
-PAYMENT_ICONS = [
-    'visa', 'mastercard', 'amex', 'discover',
-    'payment-icon', 'payment_icon', 'cc-visa', 'cc-mastercard',
+    'shopify_payments', 'shop_pay', 'shopify-pay',
+    'paypal.com/sdk', 'paypal.com/js',
+    'stripe.com/v3', 'stripe.js',
+    'klarna.com', 'afterpay', 'clearpay',
+    'affirm.com', 'sezzle.com',
+    '"payment_gateway":', "'payment_gateway':",
+    'data-payment-button',
 ]
 
 def has_payment_gateway(html, soup):
     html_lower = html.lower()
-    for indicator in PAYMENT_STRONG:
-        if indicator in html_lower:
+    # Only flag if STRONG payment indicators found
+    strong_hits = sum(1 for ind in PAYMENT_STRONG if ind in html_lower)
+    if strong_hits >= 2:
+        return True
+    if strong_hits == 1:
+        # Double-check: look for actual checkout working
+        if 'stripe.js' in html_lower or 'paypal.com/sdk' in html_lower:
             return True
-    footer = soup.find('footer')
-    if footer:
-        footer_html = str(footer).lower()
-        for icon in PAYMENT_ICONS:
-            if icon in footer_html:
-                return True
     return False
 
 # ── Email / phone extraction ──────────────────────────────────────────────────
@@ -179,76 +175,57 @@ def get_store_info(url, session):
     except:
         return None
 
-# ── Serper.dev search (works from any server IP) ──────────────────────────────
-def search_with_serper(query, serper_key, num=100):
-    """Use Serper.dev Google Search API — 2500 free searches, no IP blocking."""
+# ── Serper.dev search with pagination ────────────────────────────────────────
+def search_with_serper(query, serper_key, pages=5):
+    """Paginate Serper — 10 results/page × 5 pages = 50 results per query."""
     urls = []
     try:
-        headers = {
-            'X-API-KEY': serper_key,
-            'Content-Type': 'application/json'
-        }
-        payload = {'q': query, 'num': num, 'gl': 'us', 'hl': 'en'}
-        r = requests.post(
-            'https://google.serper.dev/search',
-            headers=headers,
-            json=payload,
-            timeout=15
-        )
-        if r.status_code != 200:
-            log(f"⚠️  Serper API error: {r.status_code} — {r.text[:120]}", "WARN")
-            return urls
-
-        data = r.json()
-
-        # Extract from all result types
-        all_links = []
-        for item in data.get('organic', []):
-            all_links.append(item.get('link', ''))
-            # Also check sitelinks
-            for sl in item.get('sitelinks', []):
-                all_links.append(sl.get('link', ''))
-
-        for item in data.get('topStories', []):
-            all_links.append(item.get('link', ''))
-
-        log(f"📡 Serper returned {len(data.get('organic', []))} organic results", "INFO")
-
-        for link in all_links:
-            m = re.match(r'(https?://[a-zA-Z0-9\-]+\.myshopify\.com)', link)
-            if m:
-                store_url = m.group(1)
-                if store_url not in urls:
-                    urls.append(store_url)
-
+        headers = {'X-API-KEY': serper_key, 'Content-Type': 'application/json'}
+        for page in range(1, pages + 1):
+            payload = {'q': query, 'num': 10, 'page': page, 'gl': 'us', 'hl': 'en'}
+            r = requests.post('https://google.serper.dev/search',
+                              headers=headers, json=payload, timeout=15)
+            if r.status_code != 200:
+                log(f"⚠️  Serper p{page}: {r.status_code}", "WARN")
+                break
+            data = r.json()
+            organic = data.get('organic', [])
+            if not organic:
+                break
+            found_page = 0
+            for item in organic:
+                link = item.get('link', '')
+                m = re.match(r'(https?://[a-zA-Z0-9\-]+\.myshopify\.com)', link)
+                if m:
+                    su = m.group(1)
+                    if su not in urls:
+                        urls.append(su)
+                        found_page += 1
+            log(f"   📄 Page {page}: {len(organic)} results → {found_page} Shopify stores", "INFO")
+            time.sleep(random.uniform(0.5, 1.2))
     except Exception as e:
         log(f"⚠️  Serper error: {e}", "WARN")
     return urls
 
-# ── Main search function ──────────────────────────────────────────────────────
+# ── Main search — targets new/incomplete stores ───────────────────────────────
 def search_shopify_stores(keyword, country, serper_key):
     all_urls = []
-
-    # No site: operator — free plan doesn't support it
-    # Search broadly and filter myshopify.com from results
     queries = [
-        f'{keyword} {country} myshopify.com shop',
-        f'{keyword} {country} shopify store buy',
-        f'{keyword} store {country} shopify',
-        f'{keyword} {country} online store shopify',
+        f'{keyword} {country} myshopify.com',
+        f'new {keyword} store {country} myshopify.com',
+        f'{keyword} {country} myshopify.com 2024 2025',
+        f'"powered by shopify" {keyword} {country} myshopify.com',
+        f'{keyword} myshopify.com {country} buy online',
     ]
-
     for i, query in enumerate(queries):
-        if len(all_urls) >= 100:
+        if len(all_urls) >= 150:
             break
         log(f"🔍 Search {i+1}/{len(queries)}: {query}", "INFO")
-        found = search_with_serper(query, serper_key, num=100)
+        found = search_with_serper(query, serper_key, pages=5)
         new = [u for u in found if u not in all_urls]
         all_urls.extend(new)
-        log(f"✅ Query {i+1}: {len(new)} new stores (total: {len(all_urls)})", "INFO")
-        if i < len(queries) - 1:
-            time.sleep(random.uniform(1, 3))
-
+        log(f"✅ Query {i+1} done: +{len(new)} new (total: {len(all_urls)})", "INFO")
+        time.sleep(random.uniform(1, 2))
     log(f"📦 Total unique Shopify stores: {len(all_urls)}", "INFO")
     return all_urls
 
