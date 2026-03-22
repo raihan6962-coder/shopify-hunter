@@ -145,25 +145,32 @@ HEADERS = {
 
 def get_store_info(url, session):
     try:
-        r = session.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
+        # Normalize to homepage only
+        parsed = re.match(r'(https?://[^/]+)', url)
+        if not parsed:
+            return None
+        base_url = parsed.group(1)
+
+        r = session.get(base_url, headers=HEADERS, timeout=15, allow_redirects=True)
         if r.status_code != 200:
             return None
         html = r.text
         if len(html) < 500:
             return None
-        if 'cdn.shopify.com' not in html and 'shopify' not in html.lower():
+        # Must be Shopify
+        if 'cdn.shopify.com' not in html and 'Shopify.theme' not in html and 'shopify' not in html[:3000].lower():
             return None
         soup = BeautifulSoup(html, 'html.parser')
         if has_payment_gateway(html, soup):
             return None
         title = soup.find('title')
-        store_name = title.text.strip()[:80] if title else url.replace('https://','').split('.')[0]
+        store_name = title.text.strip()[:80] if title else base_url.replace('https://','').split('.')[0]
         email = extract_email(soup, html)
         phone = extract_phone(html)
         if not email:
             for path in ['/pages/contact', '/contact', '/pages/about']:
                 try:
-                    cr = session.get(url + path, headers=HEADERS, timeout=10)
+                    cr = session.get(base_url + path, headers=HEADERS, timeout=10)
                     if cr.status_code == 200:
                         cs = BeautifulSoup(cr.text, 'html.parser')
                         email = extract_email(cs, cr.text)
@@ -171,13 +178,13 @@ def get_store_info(url, session):
                             break
                 except:
                     continue
-        return {'store_name': store_name, 'url': url, 'email': email, 'phone': phone}
+        return {'store_name': store_name, 'url': base_url, 'email': email, 'phone': phone}
     except:
         return None
 
-# ── Serper.dev search with pagination ────────────────────────────────────────
+# ── Serper.dev — collect ALL result URLs ─────────────────────────────────────
 def search_with_serper(query, serper_key, pages=5):
-    """Paginate Serper — 10 results/page × 5 pages = 50 results per query."""
+    """Get ALL URLs from Serper results — don't filter by myshopify.com here."""
     urls = []
     try:
         headers = {'X-API-KEY': serper_key, 'Content-Type': 'application/json'}
@@ -186,47 +193,54 @@ def search_with_serper(query, serper_key, pages=5):
             r = requests.post('https://google.serper.dev/search',
                               headers=headers, json=payload, timeout=15)
             if r.status_code != 200:
-                log(f"⚠️  Serper p{page}: {r.status_code}", "WARN")
+                log(f"⚠️  Serper p{page}: {r.status_code} — {r.text[:80]}", "WARN")
                 break
             data = r.json()
             organic = data.get('organic', [])
             if not organic:
                 break
-            found_page = 0
             for item in organic:
                 link = item.get('link', '')
-                m = re.match(r'(https?://[a-zA-Z0-9\-]+\.myshopify\.com)', link)
-                if m:
-                    su = m.group(1)
-                    if su not in urls:
-                        urls.append(su)
-                        found_page += 1
-            log(f"   📄 Page {page}: {len(organic)} results → {found_page} Shopify stores", "INFO")
-            time.sleep(random.uniform(0.5, 1.2))
+                if link and link.startswith('http') and link not in urls:
+                    # Skip obvious non-store links
+                    skip = ['youtube.com', 'facebook.com', 'instagram.com',
+                            'twitter.com', 'reddit.com', 'wikipedia.org',
+                            'amazon.com', 'ebay.com', 'etsy.com', 'pinterest.com',
+                            'tiktok.com', 'linkedin.com', 'google.com']
+                    if not any(s in link for s in skip):
+                        urls.append(link)
+            log(f"   📄 Page {page}: {len(organic)} results collected", "INFO")
+            time.sleep(random.uniform(0.5, 1.0))
     except Exception as e:
         log(f"⚠️  Serper error: {e}", "WARN")
     return urls
 
-# ── Main search — targets new/incomplete stores ───────────────────────────────
+# ── Main search ───────────────────────────────────────────────────────────────
 def search_shopify_stores(keyword, country, serper_key):
+    """
+    Search broadly — then visit each URL and check:
+    1. Is it a Shopify store?
+    2. Does it NOT have a payment gateway?
+    This way custom domain Shopify stores are also found.
+    """
     all_urls = []
     queries = [
+        f'{keyword} store {country} shopify',
+        f'buy {keyword} online {country} shopify store',
+        f'{keyword} {country} shopify shop new',
+        f'{keyword} {country} online store powered by shopify',
         f'{keyword} {country} myshopify.com',
-        f'new {keyword} store {country} myshopify.com',
-        f'{keyword} {country} myshopify.com 2024 2025',
-        f'"powered by shopify" {keyword} {country} myshopify.com',
-        f'{keyword} myshopify.com {country} buy online',
     ]
     for i, query in enumerate(queries):
-        if len(all_urls) >= 150:
+        if len(all_urls) >= 200:
             break
         log(f"🔍 Search {i+1}/{len(queries)}: {query}", "INFO")
         found = search_with_serper(query, serper_key, pages=5)
         new = [u for u in found if u not in all_urls]
         all_urls.extend(new)
-        log(f"✅ Query {i+1} done: +{len(new)} new (total: {len(all_urls)})", "INFO")
+        log(f"✅ Query {i+1}: +{len(new)} URLs (total: {len(all_urls)})", "INFO")
         time.sleep(random.uniform(1, 2))
-    log(f"📦 Total unique Shopify stores: {len(all_urls)}", "INFO")
+    log(f"📦 Total URLs to check: {len(all_urls)}", "INFO")
     return all_urls
 
 # ── Apps Script integration ───────────────────────────────────────────────────
