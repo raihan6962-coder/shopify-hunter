@@ -571,6 +571,10 @@ tr:hover td { background: rgba(0,212,255,0.03); }
       <div class="stat-label">EMAILS SENT</div>
       <div class="stat-value" id="stat-emails">0</div>
     </div>
+    <div class="stat-card" style="--accent:#b06dff">
+      <div class="stat-label">EMAILS OPENED</div>
+      <div class="stat-value" id="stat-opened">0</div>
+    </div>
     <div class="stat-card yellow">
       <div class="stat-label">KEYWORDS</div>
       <div class="stat-value" id="stat-kws">0</div>
@@ -756,6 +760,10 @@ tr:hover td { background: rgba(0,212,255,0.03); }
             <div class="field">
               <label>Groq API Key</label>
               <input type="password" id="cfg-groq" placeholder="gsk_..." />
+            </div>
+            <div class="field">
+              <label>Serper API Key <a href="https://serper.dev" target="_blank" style="color:var(--cyan);font-size:10px">→ Get free key (2500 searches)</a></label>
+              <input type="password" id="cfg-serper" placeholder="Paste Serper API key..." />
             </div>
             <div class="field" style="max-width:140px">
               <label>Min Leads Target</label>
@@ -1143,17 +1151,20 @@ async function loadSettings() {
   const r = await fetch('/api/settings');
   const cfg = await r.json();
   if (cfg.groq_api_key) document.getElementById('cfg-groq').value = cfg.groq_api_key;
+  if (cfg.serper_api_key) document.getElementById('cfg-serper').value = cfg.serper_api_key;
   if (cfg.min_leads) document.getElementById('cfg-min-leads').value = cfg.min_leads;
   if (cfg.apps_script_url) document.getElementById('cfg-script-url').value = cfg.apps_script_url;
 }
 
 async function saveSettings() {
   const groq = document.getElementById('cfg-groq').value.trim();
+  const serper = document.getElementById('cfg-serper').value.trim();
   const minLeads = document.getElementById('cfg-min-leads').value;
   const alert = document.getElementById('cfg-alert');
   if (!groq) return showAlert(alert, 'error', 'Groq API key is required!');
+  if (!serper) return showAlert(alert, 'error', 'Serper API key is required! Get free key at serper.dev');
   await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({groq_api_key:groq, min_leads:minLeads})});
+    body:JSON.stringify({groq_api_key:groq, serper_api_key:serper, min_leads:minLeads})});
   showAlert(alert, 'success', '✅ Settings saved!');
 }
 
