@@ -196,15 +196,25 @@ def search_with_serper(query, serper_key, num=100):
             timeout=15
         )
         if r.status_code != 200:
-            log(f"⚠️  Serper API error: {r.status_code} — {r.text[:100]}", "WARN")
+            log(f"⚠️  Serper API error: {r.status_code} — {r.text[:120]}", "WARN")
             return urls
 
         data = r.json()
-        results = data.get('organic', [])
-        log(f"📡 Serper returned {len(results)} results", "INFO")
 
-        for item in results:
-            link = item.get('link', '')
+        # Extract from all result types
+        all_links = []
+        for item in data.get('organic', []):
+            all_links.append(item.get('link', ''))
+            # Also check sitelinks
+            for sl in item.get('sitelinks', []):
+                all_links.append(sl.get('link', ''))
+
+        for item in data.get('topStories', []):
+            all_links.append(item.get('link', ''))
+
+        log(f"📡 Serper returned {len(data.get('organic', []))} organic results", "INFO")
+
+        for link in all_links:
             m = re.match(r'(https?://[a-zA-Z0-9\-]+\.myshopify\.com)', link)
             if m:
                 store_url = m.group(1)
@@ -219,22 +229,25 @@ def search_with_serper(query, serper_key, num=100):
 def search_shopify_stores(keyword, country, serper_key):
     all_urls = []
 
+    # No site: operator — free plan doesn't support it
+    # Search broadly and filter myshopify.com from results
     queries = [
-        f'site:myshopify.com {keyword} {country}',
-        f'site:myshopify.com {keyword} "{country}"',
-        f'site:myshopify.com "{keyword}" store',
+        f'{keyword} {country} myshopify.com shop',
+        f'{keyword} {country} shopify store buy',
+        f'{keyword} store {country} shopify',
+        f'{keyword} {country} online store shopify',
     ]
 
     for i, query in enumerate(queries):
         if len(all_urls) >= 100:
             break
-        log(f"🔍 Search {i+1}/3: {query}", "INFO")
+        log(f"🔍 Search {i+1}/{len(queries)}: {query}", "INFO")
         found = search_with_serper(query, serper_key, num=100)
         new = [u for u in found if u not in all_urls]
         all_urls.extend(new)
         log(f"✅ Query {i+1}: {len(new)} new stores (total: {len(all_urls)})", "INFO")
         if i < len(queries) - 1:
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(1, 3))
 
     log(f"📦 Total unique Shopify stores: {len(all_urls)}", "INFO")
     return all_urls
