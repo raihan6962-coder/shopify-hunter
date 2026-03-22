@@ -15,6 +15,7 @@ import logging
 import io
 import csv
 import os
+import urllib.parse
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
@@ -96,7 +97,6 @@ PAYMENT_STRONG = [
     'data-payment-button', '"payment_gateway"', "'payment_gateway'",
     'payment-gateway', 'payment_method',
 ]
-
 PAYMENT_ICONS = [
     'visa', 'mastercard', 'amex', 'discover', 'jcb',
     'payment-icon', 'payment_icon', 'cc-visa', 'cc-mastercard',
@@ -154,15 +154,6 @@ def extract_phone(html):
             return found.group(0).strip()
     return None
 
-# ── User agents pool for rotation ─────────────────────────────────────────────
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-]
-
 STORE_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -183,7 +174,7 @@ def get_store_info(url, session):
         if has_payment_gateway(html, soup):
             return None
         title = soup.find('title')
-        store_name = title.text.strip()[:80] if title else url.split('.')[0].replace('https://', '')
+        store_name = title.text.strip()[:80] if title else url.replace('https://','').split('.')[0]
         email = extract_email(soup, html)
         phone = extract_phone(html)
         if not email:
@@ -201,101 +192,117 @@ def get_store_info(url, session):
     except:
         return None
 
-# ── BING SCRAPER — works from Render servers ───────────────────────────────────
-def scrape_bing(query, max_results=50):
-    """Scrape Bing search results directly. No API needed."""
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+]
+
+# ── Extract myshopify.com URLs from any HTML page ────────────────────────────
+SHOPIFY_REGEX = re.compile(r'https?://([a-zA-Z0-9\-]+)\.myshopify\.com')
+
+def extract_shopify_urls_from_html(html):
+    """Find all myshopify.com URLs in raw HTML — handles Bing redirect wrappers."""
     urls = []
-    offsets = [0, 10, 20, 30, 40]
-
-    for offset in offsets:
-        if len(urls) >= max_results:
-            break
-        try:
-            ua = random.choice(USER_AGENTS)
-            headers = {
-                'User-Agent': ua,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Referer': 'https://www.bing.com/',
-                'DNT': '1',
-            }
-            params = {
-                'q': query,
-                'first': offset,
-                'count': 10,
-                'setlang': 'en',
-            }
-            r = requests.get(
-                'https://www.bing.com/search',
-                params=params,
-                headers=headers,
-                timeout=15
-            )
-            if r.status_code != 200:
-                log(f"⚠️  Bing returned {r.status_code} at offset {offset}", "WARN")
-                time.sleep(random.uniform(5, 10))
-                continue
-
-            soup = BeautifulSoup(r.text, 'html.parser')
-            # Bing result links are in <a> tags inside <li class="b_algo">
-            results = soup.select('li.b_algo h2 a, li.b_algo .b_title a, .b_algo a[href]')
-            found = 0
-            for a in results:
-                href = a.get('href', '')
-                if not href.startswith('http'):
-                    continue
-                m = re.match(r'(https?://[a-zA-Z0-9\-]+\.myshopify\.com)', href)
-                if m:
-                    store_url = m.group(1)
-                    if store_url not in urls:
-                        urls.append(store_url)
-                        found += 1
-
-            log(f"📄 Bing page {offset//10 + 1}: {found} stores found", "INFO")
-            time.sleep(random.uniform(4, 8))
-
-        except Exception as e:
-            log(f"⚠️  Bing scrape error: {e}", "WARN")
-            time.sleep(10)
-            continue
-
+    # Direct matches in raw HTML text
+    for m in SHOPIFY_REGEX.finditer(html):
+        full = f"https://{m.group(1)}.myshopify.com"
+        if full not in urls:
+            urls.append(full)
+    # Also decode percent-encoded URLs (Bing wraps links)
+    decoded = urllib.parse.unquote(html)
+    for m in SHOPIFY_REGEX.finditer(decoded):
+        full = f"https://{m.group(1)}.myshopify.com"
+        if full not in urls:
+            urls.append(full)
     return urls
 
-def search_shopify_stores(keyword, country):
-    """
-    Search Shopify stores using Bing scraping.
-    Multiple queries to maximize results.
-    """
-    all_urls = []
+# ── Google scraper ────────────────────────────────────────────────────────────
+def scrape_google(query, session):
+    urls = []
+    try:
+        headers = {
+            'User-Agent': random.choice(USER_AGENTS),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+        params = {'q': query, 'num': 100, 'hl': 'en', 'gl': 'us'}
+        r = session.get('https://www.google.com/search', params=params,
+                        headers=headers, timeout=15)
+        if r.status_code == 200:
+            found = extract_shopify_urls_from_html(r.text)
+            urls.extend(found)
+            log(f"🌐 Google: {len(found)} stores found", "INFO")
+        else:
+            log(f"⚠️  Google returned {r.status_code}", "WARN")
+    except Exception as e:
+        log(f"⚠️  Google error: {e}", "WARN")
+    return urls
 
+# ── Bing scraper ──────────────────────────────────────────────────────────────
+def scrape_bing(query, session):
+    urls = []
+    for offset in [0, 10, 20, 30]:
+        try:
+            headers = {
+                'User-Agent': random.choice(USER_AGENTS),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+            params = {'q': query, 'first': offset + 1, 'count': 10}
+            r = session.get('https://www.bing.com/search', params=params,
+                            headers=headers, timeout=15)
+            if r.status_code == 200:
+                found = extract_shopify_urls_from_html(r.text)
+                new = [u for u in found if u not in urls]
+                urls.extend(new)
+                log(f"📄 Bing page {offset//10+1}: {len(new)} stores", "INFO")
+            time.sleep(random.uniform(3, 6))
+        except Exception as e:
+            log(f"⚠️  Bing error: {e}", "WARN")
+            time.sleep(5)
+    return urls
+
+# ── MAIN SEARCH FUNCTION ──────────────────────────────────────────────────────
+def search_shopify_stores(keyword, country):
+    all_urls = []
+    session = requests.Session()
+    session.max_redirects = 5
+
+    # Build queries — broad ones work better across search engines
     queries = [
-        f'{keyword} {country} site:myshopify.com',
-        f'{keyword} store {country} myshopify.com',
-        f'shopify {keyword} {country} "myshopify.com"',
+        f'{keyword} {country} myshopify.com',
+        f'{keyword} store {country} myshopify',
+        f'shopify {keyword} {country}',
     ]
 
+    log(f"🚀 Starting search: {keyword} | {country}", "INFO")
+
     for i, query in enumerate(queries):
-        if len(all_urls) >= 60:
+        if len(all_urls) >= 80:
             break
 
-        log(f"🔍 Bing search {i+1}/3: {query}", "INFO")
-        found = scrape_bing(query, max_results=40)
+        log(f"🔍 Query {i+1}: {query}", "INFO")
 
-        new_count = 0
-        for u in found:
+        # Try Google first
+        found_g = scrape_google(query, session)
+        for u in found_g:
             if u not in all_urls:
                 all_urls.append(u)
-                new_count += 1
 
-        log(f"✅ Query {i+1} done — {new_count} new stores", "INFO")
+        time.sleep(random.uniform(3, 6))
 
-        if i < len(queries) - 1:
-            wait = random.uniform(5, 10)
-            log(f"⏳ Waiting {int(wait)}s before next query...", "INFO")
-            time.sleep(wait)
+        # Then Bing
+        found_b = scrape_bing(query, session)
+        for u in found_b:
+            if u not in all_urls:
+                all_urls.append(u)
 
-    log(f"📦 Total unique stores: {len(all_urls)}", "INFO")
+        log(f"✅ Query {i+1} total so far: {len(all_urls)} stores", "INFO")
+        time.sleep(random.uniform(4, 8))
+
+    log(f"📦 Total unique Shopify stores found: {len(all_urls)}", "INFO")
     return all_urls
 
 def call_apps_script(url, payload):
@@ -381,21 +388,21 @@ def run_automation():
     min_leads = int(cfg.get('min_leads', '500'))
 
     if not groq_key:
-        log("❌ Groq API Key not configured. Go to Settings.", "ERROR")
+        log("❌ Groq API Key not set. Go to Config.", "ERROR")
         automation_running = False
         return
     if not keywords:
-        log("❌ No keywords found. Add keywords in Custom Leads.", "ERROR")
+        log("❌ No keywords found. Add in Custom Leads.", "ERROR")
         automation_running = False
         return
     if not templates:
-        log("❌ No email template found. Add one in Email Templates.", "ERROR")
+        log("❌ No email template. Add in Email Templates.", "ERROR")
         automation_running = False
         return
 
     tpl = dict(templates[0])
-    session = requests.Session()
-    session.max_redirects = 5
+    store_session = requests.Session()
+    store_session.max_redirects = 5
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
@@ -416,14 +423,14 @@ def run_automation():
         store_urls = search_shopify_stores(keyword, country)
 
         if not store_urls:
-            log(f"⚠️  No stores found — skipping keyword.", "WARN")
+            log(f"⚠️  0 stores found — try different keyword/country.", "WARN")
             conn = get_db()
             conn.execute("UPDATE keywords SET used=1, leads_found=0 WHERE id=?", (kw_row['id'],))
             conn.commit()
             conn.close()
             continue
 
-        log(f"🏪 {len(store_urls)} stores to check for payment gateway...", "INFO")
+        log(f"🏪 {len(store_urls)} stores found — checking payment gateways...", "INFO")
 
         for url in store_urls:
             if not automation_running or total_leads >= min_leads:
@@ -436,7 +443,7 @@ def run_automation():
                 continue
 
             log(f"🔎 Checking: {url}", "INFO")
-            info = get_store_info(url, session)
+            info = get_store_info(url, store_session)
 
             if info:
                 info['country'] = country
@@ -458,7 +465,7 @@ def run_automation():
                 finally:
                     conn.close()
             else:
-                log(f"⏭️  Has payment or invalid: {url}", "INFO")
+                log(f"⏭️  Skipped (has payment or invalid): {url}", "INFO")
 
             time.sleep(random.uniform(1, 3))
 
@@ -466,13 +473,13 @@ def run_automation():
         conn.execute("UPDATE keywords SET used=1, leads_found=? WHERE id=?", (kw_leads, kw_row['id']))
         conn.commit()
         conn.close()
-        log(f"🏷️  Keyword '{keyword}' done — {kw_leads} leads found", "SUCCESS")
+        log(f"🏷️  '{keyword}' done — {kw_leads} leads collected", "SUCCESS")
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log(f"🎯 LEAD GENERATION COMPLETE — {total_leads} total leads", "SUCCESS")
+    log(f"🎯 LEAD GENERATION DONE — {total_leads} total leads", "SUCCESS")
 
     if not apps_url:
-        log("⚠️  Apps Script URL not set — email phase skipped", "WARN")
+        log("⚠️  No Apps Script URL — email phase skipped", "WARN")
         automation_running = False
         return
 
@@ -484,13 +491,13 @@ def run_automation():
     ).fetchall()
     conn.close()
 
-    log(f"📨 {len(outreach_leads)} leads queued for email", "INFO")
+    log(f"📨 {len(outreach_leads)} leads queued for outreach", "INFO")
 
     for i, lead in enumerate(outreach_leads):
         if not automation_running:
             break
         ld = dict(lead)
-        log(f"✉️  Sending {i+1}/{len(outreach_leads)} → {ld['email']}", "INFO")
+        log(f"✉️  {i+1}/{len(outreach_leads)} → {ld['email']}", "INFO")
         subject, body = generate_email(tpl['subject'], tpl['body'], ld, groq_key)
         ok = send_email_via_script(ld['email'], subject, body, apps_url)
         if ok:
@@ -498,11 +505,11 @@ def run_automation():
             conn.execute("UPDATE leads SET email_sent=1 WHERE id=?", (ld['id'],))
             conn.commit()
             conn.close()
-            log(f"✅ Email sent → {ld['email']}", "SUCCESS")
+            log(f"✅ Sent → {ld['email']}", "SUCCESS")
         else:
-            log(f"❌ Send failed → {ld['email']}", "ERROR")
+            log(f"❌ Failed → {ld['email']}", "ERROR")
         delay = random.randint(60, 120)
-        log(f"⏳ Next email in {delay}s...", "INFO")
+        log(f"⏳ Next in {delay}s...", "INFO")
         time.sleep(delay)
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
@@ -682,7 +689,7 @@ def api_schedule():
             trigger='date', run_date=run_time,
             id='automation_schedule', replace_existing=True
         )
-        log(f"📅 Automation scheduled for {t}", "INFO")
+        log(f"📅 Scheduled for {t}", "INFO")
         return jsonify({'status': 'scheduled'})
     except Exception as e:
         return jsonify({'status': 'error', 'msg': str(e)}), 400
