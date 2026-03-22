@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, Response, make_response
+from flask import Flask, render_template, request, jsonify, Response
 import sqlite3
 import threading
 import queue
@@ -116,7 +116,10 @@ def has_payment_gateway(html, soup):
                 return True
     payment_divs = soup.find_all(
         ['div', 'ul', 'section'],
-        class_=lambda x: x and any(p in ' '.join(x).lower() for p in ['payment', 'pay-icon', 'accepted']) if x else False
+        class_=lambda x: x and any(
+            p in ' '.join(x).lower()
+            for p in ['payment', 'pay-icon', 'accepted']
+        ) if x else False
     )
     if payment_divs:
         return True
@@ -151,15 +154,24 @@ def extract_phone(html):
             return found.group(0).strip()
     return None
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+# ── User agents pool for rotation ─────────────────────────────────────────────
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+]
+
+STORE_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.5',
 }
 
 def get_store_info(url, session):
     try:
-        r = session.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
+        r = session.get(url, headers=STORE_HEADERS, timeout=15, allow_redirects=True)
         if r.status_code != 200:
             return None
         html = r.text
@@ -177,7 +189,7 @@ def get_store_info(url, session):
         if not email:
             for path in ['/pages/contact', '/contact', '/pages/about']:
                 try:
-                    cr = session.get(url + path, headers=HEADERS, timeout=10)
+                    cr = session.get(url + path, headers=STORE_HEADERS, timeout=10)
                     if cr.status_code == 200 and len(cr.text) > 200:
                         cs = BeautifulSoup(cr.text, 'html.parser')
                         email = extract_email(cs, cr.text)
@@ -189,48 +201,102 @@ def get_store_info(url, session):
     except:
         return None
 
-def search_shopify_stores(keyword, country):
+# ── BING SCRAPER — works from Render servers ───────────────────────────────────
+def scrape_bing(query, max_results=50):
+    """Scrape Bing search results directly. No API needed."""
     urls = []
-    queries = [
-        f'{keyword} {country} myshopify.com',
-        f'{keyword} shop {country} myshopify',
-        f'shopify {keyword} {country} store',
-        f'{keyword} online shop {country}',
-    ]
-    try:
-        from duckduckgo_search import DDGS
-        for i, query in enumerate(queries):
-            if len(urls) >= 50:
-                break
-            try:
-                wait = random.uniform(8, 15)
-                log(f"⏳ Waiting {int(wait)}s before search...", "INFO")
-                time.sleep(wait)
-                with DDGS() as ddgs:
-                    results = list(ddgs.text(query, max_results=40, safesearch='off'))
-                found_this = 0
-                for r in results:
-                    href = r.get('href', '')
-                    m = re.match(r'(https?://[a-zA-Z0-9\-]+\.myshopify\.com)', href)
-                    if m:
-                        store_url = m.group(1)
-                        if store_url not in urls:
-                            urls.append(store_url)
-                            found_this += 1
-                log(f"🔍 Query {i+1}: '{query}' → {found_this} new stores", "INFO")
-            except Exception as e:
-                err = str(e)
-                if 'ratelimit' in err.lower() or '202' in err or 'rate' in err.lower():
-                    log(f"⚠️  DDG rate limit — waiting 45s...", "WARN")
-                    time.sleep(45)
-                else:
-                    log(f"⚠️  DDG error: {err}", "WARN")
-                    time.sleep(15)
+    offsets = [0, 10, 20, 30, 40]
+
+    for offset in offsets:
+        if len(urls) >= max_results:
+            break
+        try:
+            ua = random.choice(USER_AGENTS)
+            headers = {
+                'User-Agent': ua,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Referer': 'https://www.bing.com/',
+                'DNT': '1',
+            }
+            params = {
+                'q': query,
+                'first': offset,
+                'count': 10,
+                'setlang': 'en',
+            }
+            r = requests.get(
+                'https://www.bing.com/search',
+                params=params,
+                headers=headers,
+                timeout=15
+            )
+            if r.status_code != 200:
+                log(f"⚠️  Bing returned {r.status_code} at offset {offset}", "WARN")
+                time.sleep(random.uniform(5, 10))
                 continue
-    except Exception as e:
-        log(f"Search module error: {e}", "ERROR")
-    log(f"📦 Total stores found: {len(urls)}", "INFO")
+
+            soup = BeautifulSoup(r.text, 'html.parser')
+            # Bing result links are in <a> tags inside <li class="b_algo">
+            results = soup.select('li.b_algo h2 a, li.b_algo .b_title a, .b_algo a[href]')
+            found = 0
+            for a in results:
+                href = a.get('href', '')
+                if not href.startswith('http'):
+                    continue
+                m = re.match(r'(https?://[a-zA-Z0-9\-]+\.myshopify\.com)', href)
+                if m:
+                    store_url = m.group(1)
+                    if store_url not in urls:
+                        urls.append(store_url)
+                        found += 1
+
+            log(f"📄 Bing page {offset//10 + 1}: {found} stores found", "INFO")
+            time.sleep(random.uniform(4, 8))
+
+        except Exception as e:
+            log(f"⚠️  Bing scrape error: {e}", "WARN")
+            time.sleep(10)
+            continue
+
     return urls
+
+def search_shopify_stores(keyword, country):
+    """
+    Search Shopify stores using Bing scraping.
+    Multiple queries to maximize results.
+    """
+    all_urls = []
+
+    queries = [
+        f'{keyword} {country} site:myshopify.com',
+        f'{keyword} store {country} myshopify.com',
+        f'shopify {keyword} {country} "myshopify.com"',
+    ]
+
+    for i, query in enumerate(queries):
+        if len(all_urls) >= 60:
+            break
+
+        log(f"🔍 Bing search {i+1}/3: {query}", "INFO")
+        found = scrape_bing(query, max_results=40)
+
+        new_count = 0
+        for u in found:
+            if u not in all_urls:
+                all_urls.append(u)
+                new_count += 1
+
+        log(f"✅ Query {i+1} done — {new_count} new stores", "INFO")
+
+        if i < len(queries) - 1:
+            wait = random.uniform(5, 10)
+            log(f"⏳ Waiting {int(wait)}s before next query...", "INFO")
+            time.sleep(wait)
+
+    log(f"📦 Total unique stores: {len(all_urls)}", "INFO")
+    return all_urls
 
 def call_apps_script(url, payload):
     try:
@@ -255,7 +321,12 @@ def save_lead_to_sheet(lead, url):
 def send_email_via_script(to, subject, body, url):
     if not url:
         return False
-    return call_apps_script(url, {'action': 'send_email', 'to': to, 'subject': subject, 'body': body})
+    return call_apps_script(url, {
+        'action': 'send_email',
+        'to': to,
+        'subject': subject,
+        'body': body
+    })
 
 def generate_email(template_subject, template_body, lead, groq_key):
     try:
@@ -341,16 +412,18 @@ def run_automation():
         country = kw_row['country']
         kw_leads = 0
 
-        log(f"🔍 Searching: [{keyword}] in [{country}]", "INFO")
+        log(f"🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
         store_urls = search_shopify_stores(keyword, country)
 
         if not store_urls:
-            log(f"⚠️  No stores found for this keyword, skipping.", "WARN")
+            log(f"⚠️  No stores found — skipping keyword.", "WARN")
             conn = get_db()
             conn.execute("UPDATE keywords SET used=1, leads_found=0 WHERE id=?", (kw_row['id'],))
             conn.commit()
             conn.close()
             continue
+
+        log(f"🏪 {len(store_urls)} stores to check for payment gateway...", "INFO")
 
         for url in store_urls:
             if not automation_running or total_leads >= min_leads:
@@ -360,7 +433,6 @@ def run_automation():
             exists = conn.execute("SELECT 1 FROM leads WHERE url=?", (url,)).fetchone()
             conn.close()
             if exists:
-                log(f"⏭️  Already exists: {url}", "INFO")
                 continue
 
             log(f"🔎 Checking: {url}", "INFO")
@@ -388,7 +460,7 @@ def run_automation():
             else:
                 log(f"⏭️  Has payment or invalid: {url}", "INFO")
 
-            time.sleep(random.uniform(2, 5))
+            time.sleep(random.uniform(1, 3))
 
         conn = get_db()
         conn.execute("UPDATE keywords SET used=1, leads_found=? WHERE id=?", (kw_leads, kw_row['id']))
