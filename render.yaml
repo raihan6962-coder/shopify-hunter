@@ -1,0 +1,60 @@
+services:
+  - type: web
+    name: shopify-hunter
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+```
+
+**4.** **Commit new file** ✅
+
+---
+
+## ✅ STEP 4 — `app.py` বানাও
+
+**1.** **Add file** → **Create new file**
+
+**2.** File name:
+```
+app.py
+```
+
+**3.** উপরে download করা `app.py` file টা **Notepad** দিয়ে open করো → সব copy করো → GitHub এ paste করো
+
+**4.** **Commit new file** ✅
+
+---
+
+## ✅ STEP 5 — `templates/index.html` বানাও
+
+এটা একটু আলাদা — folder সহ বানাতে হবে।
+
+**1.** **Add file** → **Create new file**
+
+**2.** File name এ লিখো: (exactly এভাবে)
+```
+templates/index.html
+```
+> `templates/` লেখার সাথে সাথে GitHub automatically folder বানিয়ে নেবে! ✨
+
+**3.** Download করা `index.html` file টা **Notepad** দিয়ে open করো → সব copy → paste করো
+
+**4.** **Commit new file** ✅
+
+---
+
+## ✅ STEP 6 — Verify করো
+
+Repository এখন এরকম দেখাবে:
+```
+shopify-hunter/
+├── app.py
+├── render.yaml
+├── requirements.txt
+├── README.md
+└── templates/
+    └── index.html
