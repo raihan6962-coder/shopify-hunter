@@ -301,39 +301,47 @@ Return ONLY valid JSON: {{"subject": "...", "body": "..."}}"""
 def run_automation():
     global automation_running
     automation_running = True
+    try:
+        _run_automation_inner()
+    except Exception as e:
+        log(f"💥 FATAL ERROR: {e}", "ERROR")
+        import traceback
+        log(traceback.format_exc()[:300], "ERROR")
+    finally:
+        automation_running = False
+
+def _run_automation_inner():
+    global automation_running
 
     conn = get_db()
     cfg = {r['key']: r['value'] for r in conn.execute("SELECT key, value FROM settings").fetchall()}
-    keywords = conn.execute("SELECT * FROM keywords WHERE used=0 ORDER BY id").fetchall()
-    templates = conn.execute("SELECT * FROM templates ORDER BY id LIMIT 1").fetchall()
+    # Convert to dicts BEFORE closing connection
+    keywords = [dict(r) for r in conn.execute("SELECT * FROM keywords WHERE used=0 ORDER BY id").fetchall()]
+    templates = [dict(r) for r in conn.execute("SELECT * FROM templates ORDER BY id LIMIT 1").fetchall()]
     conn.close()
 
     groq_key = cfg.get('groq_api_key', '')
     apps_url = cfg.get('apps_script_url', '')
     serper_key = cfg.get('serper_api_key', '')
-    min_leads = int(cfg.get('min_leads', '500'))
+    min_leads = int(cfg.get('min_leads', '5'))
 
     if not groq_key:
-        log("❌ Groq API Key missing — go to Config", "ERROR")
-        automation_running = False; return
+        log("❌ Groq API Key missing — go to Config", "ERROR"); return
     if not serper_key:
-        log("❌ Serper API Key missing — go to Config → get free key at serper.dev", "ERROR")
-        automation_running = False; return
+        log("❌ Serper API Key missing — get free key at serper.dev", "ERROR"); return
     if not keywords:
-        log("❌ No keywords — add in Custom Leads", "ERROR")
-        automation_running = False; return
+        log("❌ No keywords — add in Custom Leads screen", "ERROR"); return
     if not templates:
-        log("❌ No email template — add in Email screen", "ERROR")
-        automation_running = False; return
+        log("❌ No email template — add in Email screen", "ERROR"); return
 
-    tpl = dict(templates[0])
+    tpl = templates[0]
     session = requests.Session()
-    session.max_redirects = 5
+    session.max_redirects = 3
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
     log("🚀 SHOPIFY HUNTER AUTOMATION STARTED", "SUCCESS")
-    log(f"🎯 Target: {min_leads} leads", "INFO")
+    log(f"🎯 Target: {min_leads} leads | Keywords: {len(keywords)}", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
     log("📡 PHASE 1 — LEAD GENERATION", "INFO")
 
@@ -343,91 +351,111 @@ def run_automation():
 
         keyword = kw_row['keyword']
         country = kw_row['country']
+        kw_id = kw_row['id']
         kw_leads = 0
 
         log(f"🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
-        store_urls = search_shopify_stores(keyword, country, serper_key)
+
+        try:
+            store_urls = search_shopify_stores(keyword, country, serper_key)
+        except Exception as e:
+            log(f"⚠️  Search failed: {e}", "WARN")
+            store_urls = []
 
         if not store_urls:
-            log("⚠️  No stores found — check Serper API key or try different keyword", "WARN")
+            log("⚠️  No URLs found — skipping keyword", "WARN")
             conn = get_db()
-            conn.execute("UPDATE keywords SET used=1, leads_found=0 WHERE id=?", (kw_row['id'],))
+            conn.execute("UPDATE keywords SET used=1, leads_found=0 WHERE id=?", (kw_id,))
             conn.commit(); conn.close()
             continue
 
-        log(f"🏪 {len(store_urls)} stores — checking payment gateways...", "INFO")
+        log(f"🏪 {len(store_urls)} URLs to check...", "INFO")
 
         for url in store_urls:
             if not automation_running or total_leads >= min_leads:
                 break
-            conn = get_db()
-            exists = conn.execute("SELECT 1 FROM leads WHERE url=?", (url,)).fetchone()
-            conn.close()
-            if exists:
-                continue
-            log(f"🔎 Checking: {url}", "INFO")
-            info = get_store_info(url, session)
-            if info:
-                info['country'] = country
-                info['keyword'] = keyword
+            try:
                 conn = get_db()
-                try:
-                    conn.execute(
-                        "INSERT INTO leads (store_name,url,email,phone,country,keyword) VALUES (?,?,?,?,?,?)",
-                        (info['store_name'], info['url'], info['email'], info['phone'], country, keyword)
-                    )
-                    conn.commit()
-                    total_leads += 1
-                    kw_leads += 1
-                    log(f"✅ Lead #{total_leads} — {info['store_name']} | {info['email'] or '⚠ no email'}", "SUCCESS")
-                    save_lead_to_sheet(info, apps_url)
-                except: pass
-                finally: conn.close()
-            else:
-                log(f"⏭️  Has payment / invalid: {url}", "INFO")
-            time.sleep(random.uniform(1, 3))
+                exists = conn.execute("SELECT 1 FROM leads WHERE url=?", (url,)).fetchone()
+                conn.close()
+                if exists:
+                    continue
+
+                log(f"🔎 {url[:60]}", "INFO")
+                info = get_store_info(url, session)
+
+                if info:
+                    info['country'] = country
+                    info['keyword'] = keyword
+                    conn = get_db()
+                    try:
+                        conn.execute(
+                            "INSERT INTO leads (store_name,url,email,phone,country,keyword) VALUES (?,?,?,?,?,?)",
+                            (info['store_name'], info['url'], info['email'], info['phone'], country, keyword)
+                        )
+                        conn.commit()
+                        total_leads += 1
+                        kw_leads += 1
+                        log(f"✅ Lead #{total_leads} — {info['store_name']} | {info['email'] or '⚠ no email'}", "SUCCESS")
+                        save_lead_to_sheet(info, apps_url)
+                    except Exception as db_e:
+                        log(f"DB error: {db_e}", "WARN")
+                    finally:
+                        conn.close()
+                else:
+                    log(f"⏭️  Not Shopify / has payment", "INFO")
+
+                time.sleep(random.uniform(1, 2))
+
+            except Exception as url_e:
+                log(f"⚠️  Error on {url[:40]}: {url_e}", "WARN")
+                continue
 
         conn = get_db()
-        conn.execute("UPDATE keywords SET used=1, leads_found=? WHERE id=?", (kw_leads, kw_row['id']))
+        conn.execute("UPDATE keywords SET used=1, leads_found=? WHERE id=?", (kw_leads, kw_id))
         conn.commit(); conn.close()
-        log(f"🏷️  '{keyword}' done — {kw_leads} leads", "SUCCESS")
+        log(f"🏷️  '{keyword}' done — {kw_leads} leads collected", "SUCCESS")
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log(f"🎯 LEAD GENERATION DONE — {total_leads} leads", "SUCCESS")
+    log(f"🎯 LEAD GENERATION DONE — {total_leads} total leads", "SUCCESS")
 
     if not apps_url:
         log("⚠️  No Apps Script URL — email phase skipped", "WARN")
-        automation_running = False; return
+        return
 
     log("📧 PHASE 2 — EMAIL OUTREACH", "INFO")
     conn = get_db()
-    outreach_leads = conn.execute(
+    outreach_leads = [dict(r) for r in conn.execute(
         "SELECT * FROM leads WHERE email IS NOT NULL AND email!='' AND email_sent=0"
-    ).fetchall()
+    ).fetchall()]
     conn.close()
+
     log(f"📨 {len(outreach_leads)} leads queued", "INFO")
 
-    for i, lead in enumerate(outreach_leads):
-        if not automation_running: break
-        ld = dict(lead)
-        log(f"✉️  {i+1}/{len(outreach_leads)} → {ld['email']}", "INFO")
-        subject, body = generate_email(tpl['subject'], tpl['body'], ld, groq_key)
-        ok = send_email_via_script(ld['email'], subject, body, apps_url)
-        if ok:
-            conn = get_db()
-            conn.execute("UPDATE leads SET email_sent=1 WHERE id=?", (ld['id'],))
-            conn.commit(); conn.close()
-            log(f"✅ Sent → {ld['email']}", "SUCCESS")
-        else:
-            log(f"❌ Failed → {ld['email']}", "ERROR")
-        delay = random.randint(60, 120)
-        log(f"⏳ Next in {delay}s...", "INFO")
-        time.sleep(delay)
+    for i, ld in enumerate(outreach_leads):
+        if not automation_running:
+            break
+        try:
+            log(f"✉️  {i+1}/{len(outreach_leads)} → {ld['email']}", "INFO")
+            subject, body = generate_email(tpl['subject'], tpl['body'], ld, groq_key)
+            ok = send_email_via_script(ld['email'], subject, body, apps_url)
+            if ok:
+                conn = get_db()
+                conn.execute("UPDATE leads SET email_sent=1 WHERE id=?", (ld['id'],))
+                conn.commit(); conn.close()
+                log(f"✅ Sent → {ld['email']}", "SUCCESS")
+            else:
+                log(f"❌ Failed → {ld['email']}", "ERROR")
+            delay = random.randint(60, 120)
+            log(f"⏳ Next in {delay}s...", "INFO")
+            time.sleep(delay)
+        except Exception as e:
+            log(f"⚠️  Email error: {e}", "WARN")
+            continue
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
     log("🎉 ALL DONE — AUTOMATION COMPLETE!", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    automation_running = False
 
 # ── Flask routes ──────────────────────────────────────────────────────────────
 @app.route('/')
