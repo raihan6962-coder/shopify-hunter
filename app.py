@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, make_response
 import sqlite3
 import threading
 import queue
@@ -14,11 +14,11 @@ from datetime import datetime
 import logging
 import io
 import csv
+import os
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# ─── GLOBAL STATE ──────────────────────────────────────────────────────────────
 log_queue = queue.Queue()
 automation_running = False
 automation_thread = None
@@ -27,7 +27,6 @@ scheduler.start()
 
 DB_PATH = 'agent.db'
 
-# ─── DATABASE ──────────────────────────────────────────────────────────────────
 def get_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -79,7 +78,6 @@ def init_db():
 
 init_db()
 
-# ─── LOGGING ───────────────────────────────────────────────────────────────────
 def log(message, level="INFO"):
     entry = {'time': datetime.now().strftime('%H:%M:%S'), 'level': level, 'message': message}
     log_queue.put(json.dumps(entry))
@@ -90,14 +88,13 @@ def log(message, level="INFO"):
     finally:
         conn.close()
 
-# ─── PAYMENT GATEWAY DETECTION ────────────────────────────────────────────────
 PAYMENT_STRONG = [
     'shopify_payments', 'shop_pay', 'shopify-pay', 'shop-pay',
     'paypal.com/sdk', 'paypal.com/js', 'stripe.com/v3', 'stripe.js',
     'klarna', 'afterpay', 'clearpay', 'affirm.com', 'sezzle',
     'quadpay', 'amazon_payments', 'apple_pay', 'google_pay',
-    'data-payment-button', 'shopify.com/s/files/1/0000/checkout',
-    '"payment_gateway"', "'payment_gateway'", 'payment-gateway',
+    'data-payment-button', '"payment_gateway"', "'payment_gateway'",
+    'payment-gateway', 'payment_method',
 ]
 
 PAYMENT_ICONS = [
@@ -111,21 +108,20 @@ def has_payment_gateway(html, soup):
     for indicator in PAYMENT_STRONG:
         if indicator in html_lower:
             return True
-    # Check footer/payment sections
     footer = soup.find('footer')
     if footer:
         footer_html = str(footer).lower()
         for icon in PAYMENT_ICONS:
             if icon in footer_html:
                 return True
-    # Check any div with payment class
-    payment_divs = soup.find_all(['div', 'ul', 'section'],
-        class_=lambda x: x and any(p in ' '.join(x).lower() for p in ['payment', 'pay-icon', 'accepted']) if x else False)
+    payment_divs = soup.find_all(
+        ['div', 'ul', 'section'],
+        class_=lambda x: x and any(p in ' '.join(x).lower() for p in ['payment', 'pay-icon', 'accepted']) if x else False
+    )
     if payment_divs:
         return True
     return False
 
-# ─── EMAIL EXTRACTION ──────────────────────────────────────────────────────────
 EMAIL_REGEX = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 SKIP_EMAIL_DOMAINS = ['example', 'sentry', 'wixpress', 'shopify', 'png', 'jpg', 'svg', 'gif']
 
@@ -155,10 +151,8 @@ def extract_phone(html):
             return found.group(0).strip()
     return None
 
-# ─── STORE SCRAPER ─────────────────────────────────────────────────────────────
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                  '(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.5',
 }
@@ -171,18 +165,15 @@ def get_store_info(url, session):
         html = r.text
         if len(html) < 500:
             return None
-        # Must be Shopify
         if 'cdn.shopify.com' not in html and 'shopify' not in html.lower():
             return None
         soup = BeautifulSoup(html, 'html.parser')
-        # Skip if has payment gateway
         if has_payment_gateway(html, soup):
             return None
         title = soup.find('title')
         store_name = title.text.strip()[:80] if title else url.split('.')[0].replace('https://', '')
         email = extract_email(soup, html)
         phone = extract_phone(html)
-        # Try contact page if no email
         if not email:
             for path in ['/pages/contact', '/contact', '/pages/about']:
                 try:
@@ -200,23 +191,47 @@ def get_store_info(url, session):
 
 def search_shopify_stores(keyword, country):
     urls = []
-    query = f'site:myshopify.com {keyword} {country}'
+    queries = [
+        f'{keyword} {country} myshopify.com',
+        f'{keyword} shop {country} myshopify',
+        f'shopify {keyword} {country} store',
+        f'{keyword} online shop {country}',
+    ]
     try:
         from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=60, timelimit='m'))
-        for r in results:
-            href = r.get('href', '')
-            m = re.match(r'(https?://[a-zA-Z0-9\-]+\.myshopify\.com)', href)
-            if m:
-                store_url = m.group(1)
-                if store_url not in urls:
-                    urls.append(store_url)
+        for i, query in enumerate(queries):
+            if len(urls) >= 50:
+                break
+            try:
+                wait = random.uniform(8, 15)
+                log(f"⏳ Waiting {int(wait)}s before search...", "INFO")
+                time.sleep(wait)
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=40, safesearch='off'))
+                found_this = 0
+                for r in results:
+                    href = r.get('href', '')
+                    m = re.match(r'(https?://[a-zA-Z0-9\-]+\.myshopify\.com)', href)
+                    if m:
+                        store_url = m.group(1)
+                        if store_url not in urls:
+                            urls.append(store_url)
+                            found_this += 1
+                log(f"🔍 Query {i+1}: '{query}' → {found_this} new stores", "INFO")
+            except Exception as e:
+                err = str(e)
+                if 'ratelimit' in err.lower() or '202' in err or 'rate' in err.lower():
+                    log(f"⚠️  DDG rate limit — waiting 45s...", "WARN")
+                    time.sleep(45)
+                else:
+                    log(f"⚠️  DDG error: {err}", "WARN")
+                    time.sleep(15)
+                continue
     except Exception as e:
-        log(f"DDG search error: {e}", "ERROR")
+        log(f"Search module error: {e}", "ERROR")
+    log(f"📦 Total stores found: {len(urls)}", "INFO")
     return urls
 
-# ─── APPS SCRIPT INTEGRATION ───────────────────────────────────────────────────
 def call_apps_script(url, payload):
     try:
         r = requests.post(url, json=payload, timeout=15)
@@ -240,18 +255,12 @@ def save_lead_to_sheet(lead, url):
 def send_email_via_script(to, subject, body, url):
     if not url:
         return False
-    return call_apps_script(url, {
-        'action': 'send_email',
-        'to': to,
-        'subject': subject,
-        'body': body
-    })
+    return call_apps_script(url, {'action': 'send_email', 'to': to, 'subject': subject, 'body': body})
 
-# ─── AI EMAIL GENERATION ───────────────────────────────────────────────────────
 def generate_email(template_subject, template_body, lead, groq_key):
     try:
         client = Groq(api_key=groq_key)
-        prompt = f"""You are a cold email expert. Write a personalized, professional, spam-free email for this Shopify store owner who has NOT set up a payment gateway yet — meaning they cannot accept payments.
+        prompt = f"""You are a cold email expert. Write a personalized, professional, spam-free email for this Shopify store owner who has NOT set up a payment gateway yet.
 
 Store: {lead.get('store_name', 'this store')}
 URL: {lead.get('url', '')}
@@ -261,22 +270,21 @@ Base template:
 Subject: {template_subject}
 Body: {template_body}
 
-Requirements:
-- Personalize using store name naturally
+Rules:
+- Personalize using the store name naturally
 - Maximum 120 words
 - Zero spam trigger words
-- Genuine helpful tone about the payment gateway opportunity
-- End with a clear soft CTA
+- Helpful and genuine tone
+- Soft CTA at the end
 - Do NOT start with "I hope this email finds you well"
-- Do NOT use "Quick question" or "Just following up"
+- Return HTML body using <p> tags
 
-Return ONLY valid JSON, no markdown, no preamble:
+Return ONLY valid JSON, no markdown:
 {{"subject": "...", "body": "..."}}"""
-
         resp = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=400,
+            max_tokens=500,
             temperature=0.7
         )
         text = resp.choices[0].message.content.strip()
@@ -287,7 +295,6 @@ Return ONLY valid JSON, no markdown, no preamble:
         log(f"Groq error: {e}", "WARN")
         return template_subject, template_body
 
-# ─── MAIN AUTOMATION ───────────────────────────────────────────────────────────
 def run_automation():
     global automation_running
     automation_running = True
@@ -324,8 +331,6 @@ def run_automation():
     log("🚀 SHOPIFY HUNTER AUTOMATION STARTED", "SUCCESS")
     log(f"🎯 Target: {min_leads} leads", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-
-    # ── PHASE 1: LEAD GENERATION ────────────────────────────────────────────────
     log("📡 PHASE 1 — LEAD GENERATION", "INFO")
 
     for kw_row in keywords:
@@ -338,18 +343,24 @@ def run_automation():
 
         log(f"🔍 Searching: [{keyword}] in [{country}]", "INFO")
         store_urls = search_shopify_stores(keyword, country)
-        log(f"📦 Found {len(store_urls)} stores to check", "INFO")
+
+        if not store_urls:
+            log(f"⚠️  No stores found for this keyword, skipping.", "WARN")
+            conn = get_db()
+            conn.execute("UPDATE keywords SET used=1, leads_found=0 WHERE id=?", (kw_row['id'],))
+            conn.commit()
+            conn.close()
+            continue
 
         for url in store_urls:
             if not automation_running or total_leads >= min_leads:
                 break
 
-            # Duplicate check
             conn = get_db()
             exists = conn.execute("SELECT 1 FROM leads WHERE url=?", (url,)).fetchone()
             conn.close()
             if exists:
-                log(f"⏭️  Already in DB: {url}", "INFO")
+                log(f"⏭️  Already exists: {url}", "INFO")
                 continue
 
             log(f"🔎 Checking: {url}", "INFO")
@@ -377,9 +388,8 @@ def run_automation():
             else:
                 log(f"⏭️  Has payment or invalid: {url}", "INFO")
 
-            time.sleep(random.uniform(2, 6))
+            time.sleep(random.uniform(2, 5))
 
-        # Mark keyword used
         conn = get_db()
         conn.execute("UPDATE keywords SET used=1, leads_found=? WHERE id=?", (kw_leads, kw_row['id']))
         conn.commit()
@@ -394,7 +404,6 @@ def run_automation():
         automation_running = False
         return
 
-    # ── PHASE 2: EMAIL OUTREACH ─────────────────────────────────────────────────
     log("📧 PHASE 2 — EMAIL OUTREACH", "INFO")
 
     conn = get_db()
@@ -408,13 +417,10 @@ def run_automation():
     for i, lead in enumerate(outreach_leads):
         if not automation_running:
             break
-
         ld = dict(lead)
         log(f"✉️  Sending {i+1}/{len(outreach_leads)} → {ld['email']}", "INFO")
-
         subject, body = generate_email(tpl['subject'], tpl['body'], ld, groq_key)
         ok = send_email_via_script(ld['email'], subject, body, apps_url)
-
         if ok:
             conn = get_db()
             conn.execute("UPDATE leads SET email_sent=1 WHERE id=?", (ld['id'],))
@@ -423,7 +429,6 @@ def run_automation():
             log(f"✅ Email sent → {ld['email']}", "SUCCESS")
         else:
             log(f"❌ Send failed → {ld['email']}", "ERROR")
-
         delay = random.randint(60, 120)
         log(f"⏳ Next email in {delay}s...", "INFO")
         time.sleep(delay)
@@ -433,7 +438,6 @@ def run_automation():
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
     automation_running = False
 
-# ─── API ROUTES ────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -453,7 +457,8 @@ def api_status():
         'emails_sent': emails_sent,
         'kw_total': kw_total,
         'kw_used': kw_used,
-        'scheduled': cfg.get('scheduled_time', '')
+        'scheduled': cfg.get('scheduled_time', ''),
+        'min_leads': cfg.get('min_leads', '500'),
     })
 
 @app.route('/api/logs/stream')
@@ -549,10 +554,11 @@ def api_export_leads():
     rows = conn.execute("SELECT * FROM leads ORDER BY id DESC").fetchall()
     conn.close()
     out = io.StringIO()
-    w = csv.DictWriter(out, fieldnames=['id','store_name','url','email','phone','country','keyword','email_sent','created_at'])
+    fields = ['id','store_name','url','email','phone','country','keyword','email_sent','created_at']
+    w = csv.DictWriter(out, fieldnames=fields)
     w.writeheader()
     for r in rows:
-        w.writerow(dict(r))
+        w.writerow({k: dict(r).get(k,'') for k in fields})
     return Response(out.getvalue(), mimetype='text/csv',
                     headers={'Content-Disposition': 'attachment; filename=shopify_leads.csv'})
 
@@ -610,6 +616,5 @@ def api_schedule():
         return jsonify({'status': 'error', 'msg': str(e)}), 400
 
 if __name__ == '__main__':
-    import os
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
