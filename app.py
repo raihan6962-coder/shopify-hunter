@@ -199,129 +199,76 @@ def get_store_info(base_url, session):
     except:
         return {'store_name': base_url.replace('https://','').split('.')[0], 'email': None, 'phone': None}
 
-# ── Pure Python scraper — no API needed ─────────────────────────────────────
-# Scrapes multiple search engines for *.myshopify.com URLs directly
-
+# ── Google Custom Search API (free 100/day, no IP blocks) ───────────────────
 MYSHOPIFY_REGEX = re.compile(r'https?://([a-zA-Z0-9\-]+)\.myshopify\.com')
 
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-]
-
-def extract_myshopify_urls(html):
-    """Extract all *.myshopify.com URLs from raw HTML."""
-    found = []
-    # Direct regex on raw HTML — catches encoded and decoded URLs
-    for m in MYSHOPIFY_REGEX.finditer(html):
-        url = f"https://{m.group(1)}.myshopify.com"
-        if url not in found:
-            found.append(url)
-    # Also try URL-decoded version
-    import urllib.parse
-    decoded = urllib.parse.unquote(html)
-    for m in MYSHOPIFY_REGEX.finditer(decoded):
-        url = f"https://{m.group(1)}.myshopify.com"
-        if url not in found:
-            found.append(url)
-    return found
-
-def scrape_bing_for_shopify(query, max_pages=5):
-    """Scrape Bing search results for myshopify.com URLs."""
-    urls = []
-    search_session = requests.Session()
-    for page in range(0, max_pages * 10, 10):
-        try:
-            headers = {
-                'User-Agent': random.choice(USER_AGENTS),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate',
-                'Referer': 'https://www.bing.com/',
-            }
-            params = {'q': query, 'first': page + 1, 'count': 10}
-            r = search_session.get('https://www.bing.com/search',
-                                   params=params, headers=headers, timeout=15)
-            if r.status_code == 200:
-                found = extract_myshopify_urls(r.text)
-                new = [u for u in found if u not in urls]
-                urls.extend(new)
-                log(f"   Bing p{page//10+1}: {len(new)} myshopify URLs", "INFO")
-            elif r.status_code == 429:
-                log(f"   Bing rate limit — waiting 30s", "WARN")
-                time.sleep(30)
-                break
-            time.sleep(random.uniform(2, 4))
-        except Exception as e:
-            log(f"   Bing error: {e}", "WARN")
-            break
-    return urls
-
-def scrape_duckduckgo_for_shopify(query, max_pages=3):
-    """Scrape DuckDuckGo HTML for myshopify.com URLs."""
+def search_google_cse(query, api_key, cx_id, start=1):
+    """
+    Google Custom Search API — always works from any server.
+    Free: 100 queries/day. cx_id should target *.myshopify.com
+    """
     urls = []
     try:
-        search_session = requests.Session()
-        # DuckDuckGo HTML search
-        headers = {
-            'User-Agent': random.choice(USER_AGENTS),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
+        params = {
+            'key': api_key,
+            'cx': cx_id,
+            'q': query,
+            'num': 10,
+            'start': start,
         }
-        params = {'q': query, 'kl': 'us-en', 'kp': '-2'}
-        r = search_session.get('https://html.duckduckgo.com/html/',
-                               params=params, headers=headers, timeout=15)
+        r = requests.get('https://www.googleapis.com/customsearch/v1',
+                         params=params, timeout=15)
         if r.status_code == 200:
-            found = extract_myshopify_urls(r.text)
-            urls.extend(found)
-            log(f"   DDG: {len(found)} myshopify URLs", "INFO")
-        time.sleep(random.uniform(2, 3))
+            data = r.json()
+            items = data.get('items', [])
+            for item in items:
+                link = item.get('link', '')
+                m = MYSHOPIFY_REGEX.match(link)
+                if m:
+                    url = f"https://{m.group(1)}.myshopify.com"
+                    if url not in urls:
+                        urls.append(url)
+            log(f"   Google CSE: {len(items)} results → {len(urls)} myshopify", "INFO")
+        elif r.status_code == 429:
+            log("⚠️  Google CSE daily limit reached (100/day)", "WARN")
+        elif r.status_code == 400:
+            log(f"⚠️  Google CSE error: {r.json().get('error',{}).get('message','bad request')}", "WARN")
+        else:
+            log(f"⚠️  Google CSE: {r.status_code}", "WARN")
     except Exception as e:
-        log(f"   DDG error: {e}", "WARN")
+        log(f"⚠️  CSE error: {e}", "WARN")
     return urls
 
-def search_shopify_stores(keyword, country, serper_key=None):
+def search_shopify_stores(keyword, country, google_api_key, cx_id):
     """
-    Pure Python scraping — no API needed.
-    Searches for *.myshopify.com stores directly.
-    Serper key kept as param for compatibility but not used.
+    Search for *.myshopify.com stores using Google Custom Search.
+    CSE should be configured to search only myshopify.com sites.
     """
     all_urls = []
 
-    # Queries specifically designed to find myshopify.com subdomains
-    # These queries force search engines to return myshopify.com URLs
     queries = [
-        f'{keyword} {country} site:myshopify.com',
-        f'{keyword} {country} myshopify.com -www',
-        f'"{keyword}" "{country}" myshopify.com new store',
-        f'{keyword} {country} myshopify.com 2024 2025',
+        f'{keyword} {country}',
+        f'new {keyword} store {country}',
+        f'{keyword} shop {country} 2024',
+        f'{keyword} {country} online',
     ]
 
     for i, query in enumerate(queries):
-        if len(all_urls) >= 100:
+        if len(all_urls) >= 80:
             break
-
         log(f"🔍 Query {i+1}/{len(queries)}: {query}", "INFO")
+        # Get pages 1, 11, 21 (each = 10 results)
+        for start_idx in [1, 11, 21]:
+            found = search_google_cse(query, google_api_key, cx_id, start=start_idx)
+            new = [u for u in found if u not in all_urls]
+            all_urls.extend(new)
+            if not found:
+                break
+            time.sleep(0.5)
+        log(f"   Total so far: {len(all_urls)}", "INFO")
+        time.sleep(1)
 
-        # Try Bing first (more lenient with server IPs)
-        bing_urls = scrape_bing_for_shopify(query, max_pages=3)
-        for u in bing_urls:
-            if u not in all_urls:
-                all_urls.append(u)
-
-        # Then DuckDuckGo HTML
-        ddg_urls = scrape_duckduckgo_for_shopify(query)
-        for u in ddg_urls:
-            if u not in all_urls:
-                all_urls.append(u)
-
-        log(f"   Query {i+1} total: {len(all_urls)} unique stores", "INFO")
-        time.sleep(random.uniform(3, 6))
-
-    log(f"📦 Total myshopify.com stores found: {len(all_urls)}", "INFO")
+    log(f"📦 Total myshopify stores found: {len(all_urls)}", "INFO")
     return all_urls
 
 # ── AI Email generation ────────────────────────────────────────────────────────
@@ -438,7 +385,7 @@ def _automation_inner():
         log(f"🎯 [{keyword}] in [{country}]", "INFO")
 
         try:
-            candidate_urls = search_shopify_stores(keyword, country, serper_key)
+            candidate_urls = search_shopify_stores(keyword, country, google_api_key, cx_id)
         except Exception as e:
             log(f"Search error: {e}", "WARN")
             candidate_urls = []
