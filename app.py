@@ -45,13 +45,13 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-# ── 1. ADVANCED SCRAPING (Bypassing Google for Fresh Stores) ──────────────────
+# ── 1. ADVANCED SCRAPING (Massive Search to prevent sudden stop) ──────────────
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 def find_shopify_stores(keyword, country, serpapi_key):
     """
-    গুগল সার্চের ওপর নির্ভর না করে, সরাসরি SSL Database থেকে 
-    একদম নতুন (Fresh) স্টোর খুঁজে বের করার মেথড!
+    গুগল সার্চ এবং SSL Database থেকে প্রচুর স্টোর খুঁজে বের করার মেথড, 
+    যাতে বট হুট করে কাজ শেষ করে বন্ধ না হয়ে যায়।
     """
     all_urls = set()
     kw_clean = keyword.lower().replace(' ', '')
@@ -59,7 +59,6 @@ def find_shopify_stores(keyword, country, serpapi_key):
     # METHOD 1: Global SSL Certificate Transparency Logs (Real-time new stores)
     log(f"🔍 Scanning Global SSL Logs for brand new '{keyword}' stores...", "INFO")
     try:
-        # crt.sh is a public database of all issued SSL certificates
         r = requests.get(f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", timeout=15)
         if r.status_code == 200:
             for entry in r.json():
@@ -70,22 +69,25 @@ def find_shopify_stores(keyword, country, serpapi_key):
     except Exception as e:
         log("   SSL Scan timeout", "WARN")
 
-    # METHOD 2: Direct Footprint Search via SerpAPI
-    # সরাসরি গুগলে ওই স্টোরগুলো খুঁজবে যেগুলোতে পেমেন্ট এরর মেসেজটি আছে
-    log(f"🔍 Searching for stores with exact payment errors...", "INFO")
+    # METHOD 2: Massive SerpAPI Search (More queries to get more results)
+    log(f"🔍 Searching Google for live stores...", "INFO")
     queries =[
+        f'site:myshopify.com "{keyword}" {country}',
+        f'site:myshopify.com "{keyword}" "powered by shopify"',
+        f'site:myshopify.com "{keyword}" "contact us"',
         f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
-        f'site:myshopify.com "{keyword}" "not accepting payments"',
-        f'site:myshopify.com "{keyword}" "checkout is disabled"'
+        f'site:myshopify.com "{keyword}" "checkout"'
     ]
     
     for q in queries:
+        if len(all_urls) > 300: # লিমিট বাড়িয়ে ৩০০ করা হয়েছে
+            break
         try:
             params = {
                 'api_key': serpapi_key,
                 'engine': 'google',
                 'q': q,
-                'num': 40
+                'num': 100 # একবারে ১০০টা করে রেজাল্ট আনবে
             }
             res = requests.get('https://serpapi.com/search', params=params, timeout=15)
             if res.status_code == 200:
@@ -95,18 +97,19 @@ def find_shopify_stores(keyword, country, serpapi_key):
                         all_urls.add(f"https://{m.group(1)}.myshopify.com")
         except Exception as e:
             pass
+        time.sleep(1)
 
-    urls_list = list(all_urls)[:100] # Limit to 100 to avoid infinite loops
+    urls_list = list(all_urls)
     log(f"📦 Found {len(urls_list)} potential stores to test!", "INFO")
     return urls_list
 
-# ── 2. STRICT CHECKOUT TEST (No Password Pages Allowed) ───────────────────────
+# ── 2. STRICT CHECKOUT TEST (Fixed the rejection issue) ───────────────────────
 def check_store_target(base_url, session):
     """
-    ১. Password Page থাকলে সোজা রিজেক্ট করবে (আপনার কথামতো)।
+    ১. Password Page থাকলে সোজা রিজেক্ট করবে।
     ২. Cart এ প্রোডাক্ট অ্যাড করে Checkout পেজে যাবে।
-    ৩. Checkout পেজে Credit Card/PayPal থাকলে রিজেক্ট করবে।
-    ৪. শুধু "isn't accepting payments" এরর থাকলেই লিড হিসেবে নিবে।
+    ৩. Checkout পেজে visa/paypal থাকলে রিজেক্ট করবে।
+    ৪. যদি কোনো পেমেন্ট মেথড না পায়, তাহলেই লিড হিসেবে নিবে!
     """
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
@@ -150,15 +153,17 @@ def check_store_target(base_url, session):
                         'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 'shop pay'
                     ]
                     
+                    # যদি পেমেন্ট গেটওয়ের নাম থাকে, তাহলে রিজেক্ট
                     for pk in payment_keywords:
                         if pk in chk_html:
                             return {"is_shopify": True, "is_lead": False, "reason": f"Active Checkout ('{pk}' found)"}
                     
-                    # ✅ CHECK FOR NO-PAYMENT ERROR
-                    if "isn't accepting payments" in chk_html or "not accepting payments" in chk_html or "cannot accept payments" in chk_html:
-                        return {"is_shopify": True, "is_lead": True, "reason": "Live Store -> Checkout Disabled (No Gateway Error)!"}
+                    # ✅ যদি চেকআউট পেজে আসে এবং কোনো পেমেন্ট গেটওয়ের নাম না থাকে, তারমানে পেমেন্ট নাই! (LEAD ACCEPTED)
+                    if "isn't accepting payments" in chk_html or "not accepting payments" in chk_html:
+                        return {"is_shopify": True, "is_lead": True, "reason": "Live Store -> Checkout Disabled (Explicit Error)!"}
                     
-                    return {"is_shopify": True, "is_lead": False, "reason": "No explicit no-payment error found"}
+                    # NEW FIX: Explicit error না পেলেও যদি পেমেন্ট কিওয়ার্ড না থাকে, তবে লিড হিসেবে নিবে।
+                    return {"is_shopify": True, "is_lead": True, "reason": "No Payment Options Found on Checkout!"}
                     
             return {"is_shopify": True, "is_lead": False, "reason": "Could not test checkout (No products to add)"}
             
@@ -211,7 +216,7 @@ def get_store_info(base_url, session):
         result['phone'] = extract_phone(html)
         
         if not result['email']:
-            for path in ['/pages/contact', '/contact', '/pages/about-us']:
+            for path in['/pages/contact', '/contact', '/pages/about-us']:
                 try:
                     pr = session.get(base_url + path, headers=headers, timeout=8)
                     if pr.status_code == 200:
@@ -279,7 +284,7 @@ def run_automation():
         log(traceback.format_exc()[:600], "ERROR")
     finally:
         automation_running = False
-        log("🔴 Automation stopped", "INFO")
+        log("🔴 Automation stopped (All tasks finished)", "INFO")
 
 def _run():
     global automation_running
@@ -348,7 +353,7 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # Search for stores using the new SSL and Footprint method
+        # Search for stores using the expanded method
         try:
             store_urls = find_shopify_stores(keyword, country, serpapi_key)
         except Exception as e:
@@ -356,7 +361,7 @@ def _run():
             store_urls =[]
 
         if not store_urls:
-            log("⚠️  No URLs found for this keyword", "WARN")
+            log("⚠️  No URLs found for this keyword. Moving to next...", "WARN")
             call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
             continue
 
@@ -369,18 +374,14 @@ def _run():
                 break
 
             try:
-                log(f"   🌐 {url}", "INFO")
-
                 # Step 1 & 2: Verify Shopify & Check Checkout Page
                 target_info = check_store_target(url, session)
 
                 if not target_info.get("is_shopify"):
-                    log(f"   ❌ Not a live Shopify store — skip", "INFO")
-                    time.sleep(0.5)
-                    continue
+                    continue # Silent skip for non-shopify
 
                 if not target_info.get("is_lead"):
-                    log(f"   🚫 REJECTED: {target_info.get('reason')}", "WARN")
+                    log(f"   🚫 REJECTED: {target_info.get('reason')} - {url}", "WARN")
                     time.sleep(0.5)
                     continue
 
@@ -412,7 +413,6 @@ def _run():
                 time.sleep(random.uniform(1.5, 3))
 
             except Exception as e:
-                log(f"   ⚠️  Error: {e}", "WARN")
                 continue
 
         # Mark keyword as used
@@ -441,7 +441,7 @@ def _run():
             break
 
         email_to = lead['email']
-        log(f"✉️  [{i+1}/{len(pending)}] Sending to {email_to}...", "INFO")
+        log(f"✉️[{i+1}/{len(pending)}] Sending to {email_to}...", "INFO")
 
         subject, body = generate_email(tpl['subject'], tpl['body'], lead, groq_key)
 
