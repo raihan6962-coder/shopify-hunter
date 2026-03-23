@@ -7,7 +7,6 @@ import re
 import random
 import requests
 from bs4 import BeautifulSoup
-from groq import Groq
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import logging
@@ -52,22 +51,20 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-# ── 1. ADVANCED SCRAPING (URLScan.io + Recent SerpAPI) ────────────────────────
+# ── 1. ADVANCED SCRAPING (Massive Volume Update) ──────────────────────────────
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 def find_shopify_stores(keyword, country, serpapi_key):
     """
-    স্লো ডাটাবেস বাদ দিয়ে রিয়েল-টাইম URLScan API এবং 
-    SerpAPI এর "Past 7 Days" ফিল্টার ব্যবহার করা হয়েছে।
+    লিডের পরিমাণ বাড়ানোর জন্য লিমিট এবং সার্চ কোয়েরি বাড়ানো হয়েছে।
     """
     all_urls = set()
     kw_clean = keyword.lower().replace(' ', '')
 
-    # METHOD 1: URLScan.io (Real-time newly registered/scanned stores) - NO TIMEOUTS!
+    # METHOD 1: URLScan.io (Limit increased to 300)
     log(f"🔍 Scanning URLScan.io for recently active '{keyword}' stores...", "INFO")
     try:
-        # URLScan API থেকে একদম ফ্রেশ শপিফাই স্টোরগুলো আনবে
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=100&sort=time"
+        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=300&sort=time"
         r = requests.get(urlscan_url, timeout=10)
         if r.status_code == 200:
             data = r.json()
@@ -79,24 +76,26 @@ def find_shopify_stores(keyword, country, serpapi_key):
     except Exception as e:
         log(f"   URLScan error: {e}", "WARN")
 
-    # METHOD 2: SerpAPI with STRICT "Past 7 Days" filter
-    log(f"🔍 Searching Google (Past 7 Days only) for fresh stores...", "INFO")
+    # METHOD 2: SerpAPI with "Past Month" filter for MASSIVE volume
+    log(f"🔍 Searching Google (Past Month) for massive volume...", "INFO")
     queries = [
         f'site:myshopify.com "{keyword}" {country}',
         f'site:myshopify.com "{keyword}" "Welcome to our store"',
+        f'site:myshopify.com "{keyword}" "powered by shopify"',
+        f'site:myshopify.com intitle:"{keyword}"',
         f'site:myshopify.com "{keyword}"'
     ]
     
     for q in queries:
-        if len(all_urls) > 150:
+        if len(all_urls) > 500: # 🔥 MAGIC: লিমিট ১৫০ থেকে বাড়িয়ে ৫০০ করা হয়েছে!
             break
         try:
             params = {
                 'api_key': serpapi_key,
                 'engine': 'google',
                 'q': q,
-                'num': 50,
-                'tbs': 'qdr:w' # 🔥 MAGIC: শুধু গত ৭ দিনের রেজাল্ট আনবে!
+                'num': 100, # 🔥 MAGIC: একবারে ১০০টা করে রেজাল্ট আনবে
+                'tbs': 'qdr:m' # 🔥 MAGIC: গত ১ মাসের রেজাল্ট আনবে (ভলিউম অনেক বাড়বে)
             }
             res = requests.get('https://serpapi.com/search', params=params, timeout=15)
             if res.status_code == 200:
@@ -112,7 +111,7 @@ def find_shopify_stores(keyword, country, serpapi_key):
     log(f"📦 Found {len(urls_list)} FRESH stores to test!", "INFO")
     return urls_list
 
-# ── 2. STRICT CHECKOUT TEST (No Password Pages, Only No-Payment) ──────────────
+# ── 2. STRICT CHECKOUT TEST (The Perfect Logic) ───────────────────────────────
 def check_store_target(base_url, session):
     """
     ১. Password Page থাকলে সোজা রিজেক্ট করবে।
@@ -246,10 +245,9 @@ def get_store_info(base_url, session):
         log(f"Info extraction error: {e}", "WARN")
     return result
 
-# ── AI Email generation ───────────────────────────────────────────────────────
+# ── AI Email generation (FIXED: Using Direct REST API) ────────────────────────
 def generate_email(tpl_subject, tpl_body, lead, groq_key):
     try:
-        client = Groq(api_key=groq_key)
         prompt = f"""You are writing a short cold email to a Shopify store owner.
 
 Store: {lead.get('store_name', 'the store')}
@@ -272,15 +270,28 @@ Rules:
 Respond ONLY with valid JSON, nothing else:
 {{"subject": "...", "body": "<p>...</p><p>...</p>"}}"""
 
-        resp = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,
-            temperature=0.7
-        )
-        raw = re.sub(r'```(?:json)?|```', '', resp.choices[0].message.content.strip()).strip()
-        data = json.loads(raw)
-        return data.get('subject', tpl_subject), data.get('body', f'<p>{tpl_body}</p>')
+        headers = {
+            "Authorization": f"Bearer {groq_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama-3.1-8b-instant",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 500,
+            "temperature": 0.7
+        }
+        
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=20)
+        
+        if r.status_code == 200:
+            raw = r.json()['choices'][0]['message']['content']
+            raw = re.sub(r'```(?:json)?|```', '', raw.strip()).strip()
+            data = json.loads(raw)
+            return data.get('subject', tpl_subject), data.get('body', f'<p>{tpl_body}</p>')
+        else:
+            log(f"Groq API error: {r.text}", "WARN")
+            return tpl_subject, f'<p>{tpl_body}</p>'
+            
     except Exception as e:
         log(f"Groq error ({e}) — using template", "WARN")
         return tpl_subject, f'<p>{tpl_body}</p>'
@@ -348,7 +359,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — FINDING FRESH STORES & CHECKING CHECKOUT", "SUCCESS")
+    log("🚀 PHASE 1 — MASSIVE SEARCH & CHECKING CHECKOUT", "SUCCESS")
     log(f"🎯 Target: {min_leads} leads from {len(ready_kws)} keywords", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
@@ -366,7 +377,7 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # Search for stores using URLScan + SerpAPI (Past 7 Days)
+        # Search for stores using URLScan + SerpAPI (Past Month)
         try:
             store_urls = find_shopify_stores(keyword, country, serpapi_key)
         except Exception as e:
