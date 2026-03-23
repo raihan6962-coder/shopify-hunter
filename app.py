@@ -45,20 +45,21 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-# ── SerpAPI Search & Hidden Store Finder ──────────────────────────────────────
+# ── 1. ADVANCED SCRAPING (Bypassing Google for Fresh Stores) ──────────────────
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 def find_shopify_stores(keyword, country, serpapi_key):
     """
-    গুগল সার্চের ওপর নির্ভর না করে, সরাসরি SSL লগ এবং ব্রুট-ফোর্স দিয়ে 
-    একদম নতুন (Fresh) স্টোর খুঁজে বের করার হ্যাকার মেথড!
+    গুগল সার্চের ওপর নির্ভর না করে, সরাসরি SSL Database থেকে 
+    একদম নতুন (Fresh) স্টোর খুঁজে বের করার মেথড!
     """
     all_urls = set()
     kw_clean = keyword.lower().replace(' ', '')
 
-    # METHOD 1: SSL Certificate Transparency Logs
+    # METHOD 1: Global SSL Certificate Transparency Logs (Real-time new stores)
     log(f"🔍 Scanning Global SSL Logs for brand new '{keyword}' stores...", "INFO")
     try:
+        # crt.sh is a public database of all issued SSL certificates
         r = requests.get(f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", timeout=15)
         if r.status_code == 200:
             for entry in r.json():
@@ -67,47 +68,46 @@ def find_shopify_stores(keyword, country, serpapi_key):
                     if domain.endswith('.myshopify.com') and '*' not in domain:
                         all_urls.add(f"https://{domain}")
     except Exception as e:
-        log("   SSL Scan timeout (moving to next method)", "WARN")
+        log("   SSL Scan timeout", "WARN")
 
-    # METHOD 2: Smart Brute-Force Guessing
-    log(f"🔍 Generating hidden store links for '{keyword}'...", "INFO")
-    prefixes =['', 'my', 'the', 'shop', 'buy', 'official', 'best', 'new']
-    suffixes =['', 'shop', 'store', 'boutique', 'online', 'co', 'apparel', 'deals']
+    # METHOD 2: Direct Footprint Search via SerpAPI
+    # সরাসরি গুগলে ওই স্টোরগুলো খুঁজবে যেগুলোতে পেমেন্ট এরর মেসেজটি আছে
+    log(f"🔍 Searching for stores with exact payment errors...", "INFO")
+    queries =[
+        f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
+        f'site:myshopify.com "{keyword}" "not accepting payments"',
+        f'site:myshopify.com "{keyword}" "checkout is disabled"'
+    ]
     
-    for p in prefixes:
-        for s in suffixes:
-            if len(all_urls) > 150:
-                break
-            name = f"{p}{kw_clean}{s}"
-            if name:
-                all_urls.add(f"https://{name}.myshopify.com")
-            if p and s:
-                all_urls.add(f"https://{p}-{kw_clean}-{s}.myshopify.com")
+    for q in queries:
+        try:
+            params = {
+                'api_key': serpapi_key,
+                'engine': 'google',
+                'q': q,
+                'num': 40
+            }
+            res = requests.get('https://serpapi.com/search', params=params, timeout=15)
+            if res.status_code == 200:
+                for item in res.json().get('organic_results',[]):
+                    m = MYSHOPIFY_RE.match(item.get('link', ''))
+                    if m:
+                        all_urls.add(f"https://{m.group(1)}.myshopify.com")
+        except Exception as e:
+            pass
 
-    # METHOD 3: SerpAPI (Looking for Password Pages)
-    log(f"🔍 Searching Google for hidden password pages...", "INFO")
-    try:
-        params = {
-            'api_key': serpapi_key,
-            'engine': 'google',
-            'q': f'site:myshopify.com "{keyword}" "opening soon"',
-            'num': 40
-        }
-        res = requests.get('https://serpapi.com/search', params=params, timeout=15)
-        if res.status_code == 200:
-            for item in res.json().get('organic_results',[]):
-                m = MYSHOPIFY_RE.match(item.get('link', ''))
-                if m:
-                    all_urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception as e:
-        pass
-
-    urls_list = list(all_urls)[:100]
-    log(f"📦 Found {len(urls_list)} hidden/new stores to test!", "INFO")
+    urls_list = list(all_urls)[:100] # Limit to 100 to avoid infinite loops
+    log(f"📦 Found {len(urls_list)} potential stores to test!", "INFO")
     return urls_list
 
-# ── Payment gateway detection (Strict Checkout Test) ──────────────────────────
+# ── 2. STRICT CHECKOUT TEST (No Password Pages Allowed) ───────────────────────
 def check_store_target(base_url, session):
+    """
+    ১. Password Page থাকলে সোজা রিজেক্ট করবে (আপনার কথামতো)।
+    ২. Cart এ প্রোডাক্ট অ্যাড করে Checkout পেজে যাবে।
+    ৩. Checkout পেজে Credit Card/PayPal থাকলে রিজেক্ট করবে।
+    ৪. শুধু "isn't accepting payments" এরর থাকলেই লিড হিসেবে নিবে।
+    """
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
     headers = {
@@ -125,11 +125,11 @@ def check_store_target(base_url, session):
         if 'shopify' not in html and 'cdn.shopify.com' not in html:
             return {"is_shopify": False, "is_lead": False}
             
-        # 100% Brand New Store (Password Protected)
+        # 🚨 STRICT RULE: REJECT PASSWORD PROTECTED STORES
         if '/password' in r.url or 'password-page' in html or 'opening soon' in html:
-            return {"is_shopify": True, "is_lead": True, "reason": "Password Protected (Brand New Store)"}
+            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping as requested)"}
 
-        # The Checkout Test
+        # The Checkout Test (Add to cart -> Checkout)
         try:
             prod_req = session.get(f"{base_url}/products.json?limit=1", headers=headers, timeout=10)
             if prod_req.status_code == 200:
@@ -147,7 +147,7 @@ def check_store_target(base_url, session):
                     # 🚨 CHECK FOR PAYMENT KEYWORDS
                     payment_keywords =[
                         'visa', 'mastercard', 'amex', 'paypal', 'credit card', 
-                        'debit card', 'card number', 'stripe', 'klarna', 'afterpay'
+                        'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 'shop pay'
                     ]
                     
                     for pk in payment_keywords:
@@ -155,12 +155,12 @@ def check_store_target(base_url, session):
                             return {"is_shopify": True, "is_lead": False, "reason": f"Active Checkout ('{pk}' found)"}
                     
                     # ✅ CHECK FOR NO-PAYMENT ERROR
-                    if "isn't accepting payments" in chk_html or "not accepting payments" in chk_html:
-                        return {"is_shopify": True, "is_lead": True, "reason": "Checkout Disabled (No Gateway Error)!"}
+                    if "isn't accepting payments" in chk_html or "not accepting payments" in chk_html or "cannot accept payments" in chk_html:
+                        return {"is_shopify": True, "is_lead": True, "reason": "Live Store -> Checkout Disabled (No Gateway Error)!"}
                     
-                    return {"is_shopify": True, "is_lead": True, "reason": "No Payment Options Found on Checkout!"}
+                    return {"is_shopify": True, "is_lead": False, "reason": "No explicit no-payment error found"}
                     
-            return {"is_shopify": True, "is_lead": False, "reason": "Could not test checkout (No products)"}
+            return {"is_shopify": True, "is_lead": False, "reason": "Could not test checkout (No products to add)"}
             
         except Exception as e:
             return {"is_shopify": True, "is_lead": False, "reason": "Checkout test failed"}
@@ -170,12 +170,12 @@ def check_store_target(base_url, session):
 
 # ── Store info extraction ─────────────────────────────────────────────────────
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
-SKIP_EMAIL_DOMAINS =['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg', '.svg', 'noreply']
+SKIP_EMAIL_DOMAINS =['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg', '.svg', 'noreply', 'domain.com']
 PHONE_RE = re.compile(r'(\+\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4})')
 
 def extract_email(html, soup):
     for tag in soup.find_all('a', href=True):
-        href = tag['href']
+        href = tag.get('href', '')
         if href.startswith('mailto:'):
             email = href[7:].split('?')[0].strip().lower()
             if '@' in email and not any(d in email for d in SKIP_EMAIL_DOMAINS):
@@ -211,7 +211,7 @@ def get_store_info(base_url, session):
         result['phone'] = extract_phone(html)
         
         if not result['email']:
-            for path in['/pages/contact', '/contact', '/pages/about-us']:
+            for path in ['/pages/contact', '/contact', '/pages/about-us']:
                 try:
                     pr = session.get(base_url + path, headers=headers, timeout=8)
                     if pr.status_code == 200:
@@ -309,7 +309,7 @@ def _run():
 
     # ── Load keywords ────────────────────────────────────────────────────────
     kw_resp = call_sheet({'action': 'get_keywords'})
-    ready_kws =[k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
+    ready_kws = [k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
     if not ready_kws:
         log("❌ No READY keywords! Add keywords in Leads screen or click Reset Used", "ERROR")
         return
@@ -330,7 +330,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — FINDING HIDDEN STORES & CHECKING CHECKOUT", "SUCCESS")
+    log("🚀 PHASE 1 — FINDING STORES & CHECKING CHECKOUT", "SUCCESS")
     log(f"🎯 Target: {min_leads} leads from {len(ready_kws)} keywords", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
@@ -348,7 +348,7 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # Search for stores
+        # Search for stores using the new SSL and Footprint method
         try:
             store_urls = find_shopify_stores(keyword, country, serpapi_key)
         except Exception as e:
@@ -371,7 +371,7 @@ def _run():
             try:
                 log(f"   🌐 {url}", "INFO")
 
-                # Step 1 & 2: Verify Shopify & Check Payment Gateway
+                # Step 1 & 2: Verify Shopify & Check Checkout Page
                 target_info = check_store_target(url, session)
 
                 if not target_info.get("is_shopify"):
@@ -384,7 +384,7 @@ def _run():
                     time.sleep(0.5)
                     continue
 
-                # ✅ NO payment found!
+                # ✅ NO payment found on Checkout!
                 log(f"   🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
 
                 # Step 3: Extract contact info
