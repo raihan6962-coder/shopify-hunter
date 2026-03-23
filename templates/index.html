@@ -256,7 +256,8 @@ tr:hover td{background:rgba(0,212,255,0.03)}
           </div>
           <div class="cfg-grid">
             <div class="field"><label>Groq API Key</label><input type="password" id="cfg-groq" placeholder="gsk_..."/></div>
-            <div class="field"><label>Serper API Key <a href="https://serper.dev" target="_blank" style="color:var(--cyan);font-size:10px">→ Free at serper.dev</a></label><input type="password" id="cfg-serper" placeholder="..."/></div>
+            <div class="field"><label>Google API Key <a href="https://console.cloud.google.com" target="_blank" style="color:var(--cyan);font-size:10px">→ console.cloud.google.com</a></label><input type="password" id="cfg-google" placeholder="AIza..."/></div>
+            <div class="field"><label>Google CX ID <a href="https://cse.google.com/cse/all" target="_blank" style="color:var(--cyan);font-size:10px">→ cse.google.com</a></label><input id="cfg-cx" placeholder="Paste CX/Search Engine ID..."/></div>
             <div class="field"><label>Min Leads Target</label><input type="number" id="cfg-min" value="50" min="10" max="2000"/></div>
           </div>
           <button class="btn btn-primary btn-sm" onclick="saveConfig()">💾 SAVE TO SHEET</button>
@@ -276,6 +277,8 @@ tr:hover td{background:rgba(0,212,255,0.03)}
             <span class="step">⑥ </span>Run <b>setupSheets()</b> function once<br>
             <span class="step">⑦ </span>Deploy → Web App → Execute as Me → Anyone<br>
             <span class="step">⑧ </span>Copy URL → Add to Render as <b>APPS_SCRIPT_URL</b> environment variable<br>
+            <span class="step">⑨ </span>Get Google API Key from <a href="https://console.cloud.google.com" target="_blank" style="color:var(--cyan)">console.cloud.google.com</a> → Enable Custom Search API<br>
+            <span class="step">⑩ </span>Create Search Engine at <a href="https://cse.google.com/cse/all" target="_blank" style="color:var(--cyan)">cse.google.com</a> → Sites: <b>*.myshopify.com</b> → Get CX ID<br>
             <span class="step">⑨ </span>Redeploy Render → Done!
           </div>
           <div id="conn-status" style="font-family:'Share Tech Mono',monospace;font-size:12px;padding:10px;border-radius:8px;background:var(--bg);border:1px solid var(--border)">
@@ -486,17 +489,19 @@ async function loadSettings() {
   const d = await sheet({action:'get_config'});
   const cfg = d.config || {};
   if (cfg.groq_api_key) document.getElementById('cfg-groq').value = cfg.groq_api_key;
-  if (cfg.serper_api_key) document.getElementById('cfg-serper').value = cfg.serper_api_key;
+  if (cfg.google_api_key) document.getElementById('cfg-google').value = cfg.google_api_key;
+  if (cfg.cx_id) document.getElementById('cfg-cx').value = cfg.cx_id;
   if (cfg.min_leads) document.getElementById('cfg-min').value = cfg.min_leads;
 }
 
 async function saveConfig() {
   const groq = document.getElementById('cfg-groq').value.trim();
-  const serper = document.getElementById('cfg-serper').value.trim();
+  const google = document.getElementById('cfg-google').value.trim();
+  const cx = document.getElementById('cfg-cx').value.trim();
   const min = document.getElementById('cfg-min').value;
   const al = document.getElementById('cfg-alert');
-  if (!groq||!serper) { showAlert(al,'error','Both API keys required!'); return; }
-  const r = await sheet({action:'save_config', config:{groq_api_key:groq, serper_api_key:serper, min_leads:min}});
+  if (!groq||!google||!cx) { showAlert(al,'error','Groq Key, Google API Key, and CX ID all required!'); return; }
+  const r = await sheet({action:'save_config', config:{groq_api_key:groq, google_api_key:google, cx_id:cx, min_leads:min}});
   if (r.status==='ok') showAlert(al,'success','✅ Saved to Google Sheet!');
   else showAlert(al,'error','Error: ' + JSON.stringify(r));
 }
