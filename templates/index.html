@@ -3,1195 +3,507 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SHOPIFY HUNTER — AI LEAD AGENT</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+<title>SHOPIFY HUNTER</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@700;900&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #060810;
-  --bg2: #0d1117;
-  --bg3: #111827;
-  --border: #1e2d3d;
-  --cyan: #00d4ff;
-  --cyan-dim: rgba(0,212,255,0.12);
-  --green: #39ff14;
-  --green-dim: rgba(57,255,20,0.1);
-  --red: #ff3860;
-  --red-dim: rgba(255,56,96,0.12);
-  --yellow: #ffd93d;
-  --yellow-dim: rgba(255,217,61,0.1);
-  --text: #c9d1d9;
-  --text-dim: #58697a;
-  --glow-cyan: 0 0 20px rgba(0,212,255,0.4);
-  --glow-green: 0 0 20px rgba(57,255,20,0.4);
+  --bg:#060810;--bg2:#0d1117;--bg3:#111827;--border:#1e2d3d;
+  --cyan:#00d4ff;--cyan-dim:rgba(0,212,255,0.12);
+  --green:#39ff14;--green-dim:rgba(57,255,20,0.1);
+  --red:#ff3860;--red-dim:rgba(255,56,96,0.12);
+  --yellow:#ffd93d;--yellow-dim:rgba(255,217,61,0.1);
+  --text:#c9d1d9;--text-dim:#58697a;
 }
-* { margin:0; padding:0; box-sizing:border-box; }
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'Inter', sans-serif;
-  min-height: 100vh;
-  overflow-x: hidden;
-}
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background-image: 
-    linear-gradient(rgba(0,212,255,0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0,212,255,0.02) 1px, transparent 1px);
-  background-size: 40px 40px;
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* ─── LAYOUT ─────────────────────────────────────────────────── */
-.layout { display: flex; height: 100vh; position: relative; z-index: 1; }
-
-/* ─── SIDEBAR ────────────────────────────────────────────────── */
-.sidebar {
-  width: 72px;
-  background: var(--bg2);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 20px 0;
-  gap: 8px;
-  position: relative;
-  flex-shrink: 0;
-}
-.sidebar::after {
-  content: '';
-  position: absolute;
-  right: 0; top: 0; bottom: 0;
-  width: 1px;
-  background: linear-gradient(180deg, transparent, var(--cyan), transparent);
-  opacity: 0.3;
-}
-.logo {
-  width: 42px; height: 42px;
-  background: linear-gradient(135deg, var(--cyan), #0066ff);
-  border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  font-family: 'Orbitron', monospace;
-  font-weight: 900; font-size: 16px;
-  color: #000;
-  margin-bottom: 16px;
-  box-shadow: var(--glow-cyan);
-  animation: pulse-logo 3s ease-in-out infinite;
-}
-@keyframes pulse-logo {
-  0%,100% { box-shadow: 0 0 15px rgba(0,212,255,0.4); }
-  50% { box-shadow: 0 0 30px rgba(0,212,255,0.8); }
-}
-.nav-btn {
-  width: 48px; height: 48px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  flex-direction: column;
-  gap: 3px;
-  transition: all 0.2s;
-  position: relative;
-}
-.nav-btn svg { width: 20px; height: 20px; }
-.nav-btn span { font-size: 8px; font-family: 'Share Tech Mono', monospace; letter-spacing: 0.5px; }
-.nav-btn:hover { color: var(--cyan); background: var(--cyan-dim); border-color: var(--border); }
-.nav-btn.active {
-  color: var(--cyan);
-  background: var(--cyan-dim);
-  border-color: rgba(0,212,255,0.3);
-  box-shadow: inset 0 0 15px rgba(0,212,255,0.05);
-}
-.nav-btn.active::before {
-  content: '';
-  position: absolute;
-  left: 0; top: 50%; transform: translateY(-50%);
-  width: 3px; height: 24px;
-  background: var(--cyan);
-  border-radius: 0 2px 2px 0;
-  box-shadow: var(--glow-cyan);
-}
-.sidebar-sep { width: 32px; height: 1px; background: var(--border); margin: 8px 0; }
-
-/* ─── MAIN ───────────────────────────────────────────────────── */
-.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-
-/* ─── TOPBAR ─────────────────────────────────────────────────── */
-.topbar {
-  height: 56px;
-  background: var(--bg2);
-  border-bottom: 1px solid var(--border);
-  display: flex; align-items: center;
-  padding: 0 24px;
-  gap: 16px;
-  flex-shrink: 0;
-}
-.topbar-title {
-  font-family: 'Orbitron', monospace;
-  font-size: 13px; font-weight: 700;
-  color: var(--cyan);
-  letter-spacing: 3px;
-  text-transform: uppercase;
-}
-.topbar-sub { font-size: 11px; color: var(--text-dim); font-family: 'Share Tech Mono', monospace; }
-.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
-.status-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--text-dim);
-  display: inline-block;
-}
-.status-dot.running { background: var(--green); box-shadow: var(--glow-green); animation: blink 1s infinite; }
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
-.status-text { font-size: 11px; font-family: 'Share Tech Mono', monospace; }
-
-/* ─── STATS ROW ──────────────────────────────────────────────── */
-.stats-row {
-  display: flex; gap: 12px;
-  padding: 16px 20px 0;
-  flex-shrink: 0;
-}
-.stat-card {
-  flex: 1;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  position: relative;
-  overflow: hidden;
-}
-.stat-card::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 2px;
-  background: var(--accent, var(--cyan));
-  opacity: 0.6;
-}
-.stat-label { font-size: 10px; color: var(--text-dim); font-family: 'Share Tech Mono', monospace; letter-spacing: 1px; text-transform: uppercase; }
-.stat-value {
-  font-family: 'Orbitron', monospace;
-  font-size: 24px; font-weight: 700;
-  color: var(--accent, var(--cyan));
-  margin-top: 4px;
-  text-shadow: 0 0 20px var(--accent, var(--cyan));
-}
-.stat-card.green { --accent: var(--green); }
-.stat-card.yellow { --accent: var(--yellow); }
-.stat-card.red { --accent: var(--red); }
-
-/* ─── CONTENT AREA ───────────────────────────────────────────── */
-.content { flex: 1; overflow: auto; padding: 16px 20px 20px; }
-.screen { display: none; height: 100%; }
-.screen.active { display: flex; flex-direction: column; gap: 14px; }
-
-/* ─── PANEL ──────────────────────────────────────────────────── */
-.panel {
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
-}
-.panel-head {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; gap: 8px;
-  background: rgba(0,0,0,0.2);
-}
-.panel-head h3 {
-  font-family: 'Orbitron', monospace;
-  font-size: 11px; font-weight: 700;
-  color: var(--cyan); letter-spacing: 2px; text-transform: uppercase;
-}
-.panel-body { padding: 16px; }
-
-/* ─── TERMINAL LOG ───────────────────────────────────────────── */
-.terminal {
-  background: #030608;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 12px;
-  height: 340px;
-  overflow-y: auto;
-  padding: 12px;
-  position: relative;
-}
-.terminal::before {
-  content: '● ● ●';
-  position: absolute;
-  top: 10px; left: 12px;
-  font-size: 10px;
-  color: var(--border);
-  letter-spacing: 4px;
-}
-.terminal-inner { margin-top: 24px; }
-.log-line { padding: 2px 0; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
-.log-line .log-time { color: var(--text-dim); }
-.log-line .log-msg { color: var(--text); }
-.log-line.SUCCESS .log-msg { color: var(--green); }
-.log-line.ERROR .log-msg { color: var(--red); }
-.log-line.WARN .log-msg { color: var(--yellow); }
-.log-line.INFO .log-msg { color: var(--text); }
-.terminal-cursor {
-  display: inline-block;
-  width: 8px; height: 14px;
-  background: var(--cyan);
-  animation: cursor-blink 1s infinite;
-  vertical-align: middle;
-  margin-left: 4px;
-}
-@keyframes cursor-blink { 0%,100%{opacity:1} 50%{opacity:0} }
-
-/* ─── CONTROLS ───────────────────────────────────────────────── */
-.controls { display: flex; gap: 10px; flex-wrap: wrap; }
-.btn {
-  padding: 10px 20px;
-  border-radius: 8px;
-  border: 1px solid;
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 12px;
-  cursor: pointer;
-  display: flex; align-items: center; gap: 7px;
-  transition: all 0.2s;
-  letter-spacing: 0.5px;
-}
-.btn-primary {
-  background: linear-gradient(135deg, rgba(0,212,255,0.15), rgba(0,212,255,0.05));
-  border-color: var(--cyan);
-  color: var(--cyan);
-}
-.btn-primary:hover { background: rgba(0,212,255,0.25); box-shadow: var(--glow-cyan); }
-.btn-danger {
-  background: rgba(255,56,96,0.1);
-  border-color: var(--red);
-  color: var(--red);
-}
-.btn-danger:hover { background: rgba(255,56,96,0.2); }
-.btn-success {
-  background: rgba(57,255,20,0.1);
-  border-color: var(--green);
-  color: var(--green);
-}
-.btn-success:hover { background: rgba(57,255,20,0.2); box-shadow: var(--glow-green); }
-.btn-ghost {
-  background: transparent;
-  border-color: var(--border);
-  color: var(--text-dim);
-}
-.btn-ghost:hover { border-color: var(--cyan); color: var(--cyan); }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-sm { padding: 6px 12px; font-size: 11px; }
-.btn-icon { padding: 7px; min-width: 32px; justify-content: center; }
-
-/* ─── FORM ELEMENTS ──────────────────────────────────────────── */
-.form-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
-.field { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 140px; }
-.field label {
-  font-size: 10px; letter-spacing: 1px;
-  color: var(--text-dim);
-  font-family: 'Share Tech Mono', monospace;
-  text-transform: uppercase;
-}
-input, select, textarea {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 9px 12px;
-  color: var(--text);
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 12px;
-  transition: all 0.2s;
-  width: 100%;
-}
-input:focus, select:focus, textarea:focus {
-  outline: none;
-  border-color: var(--cyan);
-  box-shadow: 0 0 10px rgba(0,212,255,0.2);
-}
-input::placeholder, textarea::placeholder { color: var(--text-dim); }
-textarea { resize: vertical; min-height: 100px; }
-select option { background: var(--bg2); }
-
-/* ─── KEYWORD LIST ───────────────────────────────────────────── */
-.kw-list { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; max-height: 280px; overflow-y: auto; }
-.kw-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 14px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  transition: all 0.15s;
-}
-.kw-item:hover { border-color: rgba(0,212,255,0.3); }
-.kw-badge {
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-family: 'Share Tech Mono', monospace;
-  letter-spacing: 0.5px;
-}
-.kw-badge.used { background: rgba(255,56,96,0.15); color: var(--red); }
-.kw-badge.ready { background: var(--green-dim); color: var(--green); }
-.kw-name { flex: 1; font-family: 'Share Tech Mono', monospace; font-size: 13px; }
-.kw-country {
-  font-size: 11px; color: var(--cyan);
-  background: var(--cyan-dim);
-  padding: 2px 8px; border-radius: 4px;
-}
-.kw-leads { font-size: 11px; color: var(--text-dim); }
-.kw-del {
-  width: 28px; height: 28px;
-  background: transparent;
-  border: 1px solid rgba(255,56,96,0.3);
-  border-radius: 6px;
-  color: var(--red);
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 14px;
-  transition: all 0.2s;
-  flex-shrink: 0;
-}
-.kw-del:hover { background: rgba(255,56,96,0.15); }
-
-/* ─── TEMPLATE LIST ──────────────────────────────────────────── */
-.tpl-item {
-  padding: 14px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  margin-bottom: 8px;
-  transition: all 0.15s;
-}
-.tpl-item:hover { border-color: rgba(0,212,255,0.2); }
-.tpl-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.tpl-name { font-family: 'Orbitron', monospace; font-size: 12px; color: var(--cyan); flex: 1; }
-.tpl-subject { font-size: 12px; color: var(--text-dim); font-family: 'Share Tech Mono', monospace; }
-.tpl-body-preview { font-size: 11px; color: var(--text-dim); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* ─── LEADS TABLE ────────────────────────────────────────────── */
-.leads-table-wrap { overflow: auto; max-height: 420px; }
-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-th {
-  text-align: left;
-  padding: 10px 12px;
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 10px; letter-spacing: 1px;
-  color: var(--text-dim);
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-  position: sticky; top: 0;
-}
-td { padding: 9px 12px; border-bottom: 1px solid rgba(30,45,61,0.5); vertical-align: middle; }
-tr:hover td { background: rgba(0,212,255,0.03); }
-.tag-sent { padding: 2px 7px; border-radius: 4px; font-size: 10px; font-family: 'Share Tech Mono', monospace; }
-.tag-sent.yes { background: var(--green-dim); color: var(--green); }
-.tag-sent.no { background: var(--red-dim); color: var(--red); }
-
-/* ─── SCHEDULE ───────────────────────────────────────────────── */
-.schedule-display {
-  text-align: center;
-  padding: 30px;
-}
-.schedule-time {
-  font-family: 'Orbitron', monospace;
-  font-size: 32px;
-  color: var(--cyan);
-  text-shadow: var(--glow-cyan);
-  letter-spacing: 4px;
-}
-.schedule-date { font-family: 'Share Tech Mono', monospace; font-size: 13px; color: var(--text-dim); margin-top: 6px; }
-.countdown {
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 13px;
-  color: var(--yellow);
-  margin-top: 12px;
-  padding: 8px 16px;
-  background: var(--yellow-dim);
-  border-radius: 6px;
-  display: inline-block;
-}
-
-/* ─── SETTINGS ───────────────────────────────────────────────── */
-.script-box {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 14px;
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 11px;
-  color: var(--green);
-  line-height: 1.7;
-  white-space: pre-wrap;
-  max-height: 280px;
-  overflow-y: auto;
-  position: relative;
-}
-.copy-btn {
-  position: absolute;
-  top: 8px; right: 8px;
-  padding: 4px 10px;
-  font-size: 10px;
-  font-family: 'Share Tech Mono', monospace;
-  background: var(--cyan-dim);
-  border: 1px solid rgba(0,212,255,0.3);
-  border-radius: 4px;
-  color: var(--cyan);
-  cursor: pointer;
-  z-index: 1;
-}
-.copy-btn:hover { background: rgba(0,212,255,0.2); }
-.instructions {
-  background: var(--bg);
-  border-left: 3px solid var(--cyan);
-  padding: 12px 16px;
-  border-radius: 0 8px 8px 0;
-  font-size: 12px;
-  line-height: 1.8;
-  color: var(--text);
-}
-.instructions .step { color: var(--cyan); font-family: 'Share Tech Mono', monospace; }
-
-/* ─── ALERTS ─────────────────────────────────────────────────── */
-.alert {
-  padding: 10px 14px;
-  border-radius: 8px;
-  font-size: 12px;
-  font-family: 'Share Tech Mono', monospace;
-  display: none;
-}
-.alert.info { background: var(--cyan-dim); border: 1px solid rgba(0,212,255,0.3); color: var(--cyan); }
-.alert.success { background: var(--green-dim); border: 1px solid rgba(57,255,20,0.3); color: var(--green); }
-.alert.error { background: var(--red-dim); border: 1px solid rgba(255,56,96,0.3); color: var(--red); }
-.alert.show { display: block; }
-
-/* ─── SCROLLBAR ──────────────────────────────────────────────── */
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,212,255,0.3); }
-
-/* ─── PING INDICATOR ─────────────────────────────────────────── */
-.live-badge {
-  display: flex; align-items: center; gap: 6px;
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 10px; color: var(--green);
-  padding: 4px 10px;
-  background: var(--green-dim);
-  border-radius: 4px;
-}
-.empty-state {
-  text-align: center;
-  padding: 40px 20px;
-  color: var(--text-dim);
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 12px;
-}
-.empty-state .icon { font-size: 32px; margin-bottom: 10px; }
-
-/* ─── RESPONSIVE ─────────────────────────────────────────────── */
-@media (max-width: 640px) {
-  .stats-row { flex-wrap: wrap; }
-  .stat-card { min-width: calc(50% - 6px); }
-}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(0,212,255,0.02) 1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,0.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0}
+.layout{display:flex;height:100vh;position:relative;z-index:1}
+.sidebar{width:72px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:20px 0;gap:8px;flex-shrink:0}
+.logo{width:42px;height:42px;background:linear-gradient(135deg,var(--cyan),#0066ff);border-radius:10px;display:flex;align-items:center;justify-content:center;font-family:'Orbitron',monospace;font-weight:900;font-size:16px;color:#000;margin-bottom:16px;box-shadow:0 0 20px rgba(0,212,255,0.4);animation:pulse 3s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 15px rgba(0,212,255,0.4)}50%{box-shadow:0 0 30px rgba(0,212,255,0.8)}}
+.nav-btn{width:48px;height:48px;border:1px solid transparent;border-radius:12px;background:transparent;color:var(--text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:3px;transition:all 0.2s;position:relative}
+.nav-btn svg{width:20px;height:20px}
+.nav-btn span{font-size:8px;font-family:'Share Tech Mono',monospace;letter-spacing:0.5px}
+.nav-btn:hover{color:var(--cyan);background:var(--cyan-dim);border-color:var(--border)}
+.nav-btn.active{color:var(--cyan);background:var(--cyan-dim);border-color:rgba(0,212,255,0.3)}
+.nav-btn.active::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:24px;background:var(--cyan);border-radius:0 2px 2px 0;box-shadow:0 0 10px var(--cyan)}
+.sep{width:32px;height:1px;background:var(--border);margin:8px 0}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{height:56px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 24px;gap:16px;flex-shrink:0}
+.topbar-title{font-family:'Orbitron',monospace;font-size:13px;font-weight:700;color:var(--cyan);letter-spacing:3px}
+.topbar-sub{font-size:11px;color:var(--text-dim);font-family:'Share Tech Mono',monospace}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.sdot{width:8px;height:8px;border-radius:50%;background:var(--text-dim);display:inline-block}
+.sdot.running{background:var(--green);box-shadow:0 0 10px var(--green);animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+.stxt{font-size:11px;font-family:'Share Tech Mono',monospace}
+.stats-row{display:flex;gap:12px;padding:16px 20px 0;flex-shrink:0}
+.stat-card{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;position:relative;overflow:hidden}
+.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--accent,var(--cyan));opacity:0.6}
+.stat-label{font-size:10px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;letter-spacing:1px;text-transform:uppercase}
+.stat-value{font-family:'Orbitron',monospace;font-size:24px;font-weight:700;color:var(--accent,var(--cyan));margin-top:4px;text-shadow:0 0 15px var(--accent,var(--cyan))}
+.stat-card.green{--accent:var(--green)}
+.stat-card.yellow{--accent:var(--yellow)}
+.stat-card.red{--accent:var(--red)}
+.content{flex:1;overflow:auto;padding:16px 20px 20px}
+.screen{display:none;flex-direction:column;gap:14px}
+.screen.active{display:flex}
+.panel{background:var(--bg2);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.panel-head{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;background:rgba(0,0,0,0.2)}
+.panel-head h3{font-family:'Orbitron',monospace;font-size:11px;font-weight:700;color:var(--cyan);letter-spacing:2px;text-transform:uppercase}
+.panel-body{padding:16px}
+.terminal{background:#030608;border:1px solid var(--border);border-radius:10px;font-family:'Share Tech Mono',monospace;font-size:12px;height:360px;overflow-y:auto;padding:12px;position:relative}
+.terminal::before{content:'● ● ●';position:absolute;top:10px;left:12px;font-size:10px;color:var(--border);letter-spacing:4px}
+.ti{margin-top:24px}
+.ll{padding:2px 0;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.ll .lt{color:var(--text-dim)}
+.ll.SUCCESS .lm{color:var(--green)}
+.ll.ERROR .lm{color:var(--red)}
+.ll.WARN .lm{color:var(--yellow)}
+.ll.INFO .lm{color:var(--text)}
+.tc{display:inline-block;width:8px;height:14px;background:var(--cyan);animation:cb 1s infinite;vertical-align:middle;margin-left:4px}
+@keyframes cb{0%,100%{opacity:1}50%{opacity:0}}
+.controls{display:flex;gap:10px;flex-wrap:wrap}
+.btn{padding:10px 20px;border-radius:8px;border:1px solid;font-family:'Share Tech Mono',monospace;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:7px;transition:all 0.2s;letter-spacing:0.5px}
+.btn-primary{background:linear-gradient(135deg,rgba(0,212,255,0.15),rgba(0,212,255,0.05));border-color:var(--cyan);color:var(--cyan)}
+.btn-primary:hover{background:rgba(0,212,255,0.25);box-shadow:0 0 15px rgba(0,212,255,0.3)}
+.btn-danger{background:rgba(255,56,96,0.1);border-color:var(--red);color:var(--red)}
+.btn-success{background:rgba(57,255,20,0.1);border-color:var(--green);color:var(--green)}
+.btn-ghost{background:transparent;border-color:var(--border);color:var(--text-dim)}
+.btn-ghost:hover{border-color:var(--cyan);color:var(--cyan)}
+.btn:disabled{opacity:0.4;cursor:not-allowed}
+.btn-sm{padding:6px 12px;font-size:11px}
+.form-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.field{display:flex;flex-direction:column;gap:6px;flex:1;min-width:140px}
+.field label{font-size:10px;letter-spacing:1px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;text-transform:uppercase}
+input,select,textarea{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:12px;transition:all 0.2s;width:100%}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--cyan);box-shadow:0 0 10px rgba(0,212,255,0.2)}
+input::placeholder,textarea::placeholder{color:var(--text-dim)}
+textarea{resize:vertical;min-height:100px}
+.kw-list,.tpl-list{display:flex;flex-direction:column;gap:6px;margin-top:12px;max-height:320px;overflow-y:auto}
+.kw-item,.tpl-item{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;transition:all 0.15s}
+.kw-item:hover,.tpl-item:hover{border-color:rgba(0,212,255,0.3)}
+.badge{padding:3px 8px;border-radius:4px;font-size:10px;font-family:'Share Tech Mono',monospace}
+.badge.used{background:rgba(255,56,96,0.15);color:var(--red)}
+.badge.ready{background:var(--green-dim);color:var(--green)}
+.kw-name{flex:1;font-family:'Share Tech Mono',monospace;font-size:13px}
+.kw-country{font-size:11px;color:var(--cyan);background:var(--cyan-dim);padding:2px 8px;border-radius:4px}
+.del-btn{width:28px;height:28px;background:transparent;border:1px solid rgba(255,56,96,0.3);border-radius:6px;color:var(--red);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px;transition:all 0.2s;flex-shrink:0}
+.del-btn:hover{background:rgba(255,56,96,0.15)}
+.leads-wrap{overflow:auto;max-height:440px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:10px 12px;font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:1px;color:var(--text-dim);background:var(--bg);border-bottom:1px solid var(--border);position:sticky;top:0}
+td{padding:9px 12px;border-bottom:1px solid rgba(30,45,61,0.5);vertical-align:middle}
+tr:hover td{background:rgba(0,212,255,0.03)}
+.tag{padding:2px 7px;border-radius:4px;font-size:10px;font-family:'Share Tech Mono',monospace}
+.tag.sent{background:var(--green-dim);color:var(--green)}
+.tag.pending{background:var(--red-dim);color:var(--red)}
+.alert{padding:10px 14px;border-radius:8px;font-size:12px;font-family:'Share Tech Mono',monospace;display:none;margin-top:8px}
+.alert.info{background:var(--cyan-dim);border:1px solid rgba(0,212,255,0.3);color:var(--cyan)}
+.alert.success{background:var(--green-dim);border:1px solid rgba(57,255,20,0.3);color:var(--green)}
+.alert.error{background:var(--red-dim);border:1px solid rgba(255,56,96,0.3);color:var(--red)}
+.alert.show{display:block}
+.empty{text-align:center;padding:40px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:12px}
+.empty .icon{font-size:32px;margin-bottom:10px}
+.cfg-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.info-box{background:var(--bg);border-left:3px solid var(--cyan);padding:12px 16px;border-radius:0 8px 8px 0;font-size:12px;line-height:1.8;color:var(--text);margin-bottom:14px}
+.info-box .step{color:var(--cyan);font-family:'Share Tech Mono',monospace}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.live-badge{display:flex;align-items:center;gap:6px;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--green);padding:4px 10px;background:var(--green-dim);border-radius:4px}
 </style>
 </head>
 <body>
 <div class="layout">
-
-<!-- ─── SIDEBAR ──────────────────────────────────── -->
 <aside class="sidebar">
   <div class="logo">SH</div>
-  <button class="nav-btn active" data-screen="live" title="Live Automation">
-    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/>
-    </svg>
+  <button class="nav-btn active" data-screen="live" title="Live">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>
     <span>LIVE</span>
   </button>
-  <button class="nav-btn" data-screen="leads" title="Custom Leads">
-    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/>
-    </svg>
+  <button class="nav-btn" data-screen="leads" title="Keywords">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
     <span>LEADS</span>
   </button>
-  <button class="nav-btn" data-screen="data" title="Collected Leads Data">
-    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/>
-    </svg>
+  <button class="nav-btn" data-screen="data" title="Data">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375"/></svg>
     <span>DATA</span>
   </button>
-  <button class="nav-btn" data-screen="templates" title="Email Templates">
-    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/>
-    </svg>
+  <button class="nav-btn" data-screen="templates" title="Email">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg>
     <span>EMAIL</span>
   </button>
-  <button class="nav-btn" data-screen="schedule" title="Schedule">
-    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
-    </svg>
-    <span>SCHED</span>
-  </button>
-  <div class="sidebar-sep"></div>
+  <div class="sep"></div>
   <button class="nav-btn" data-screen="settings" title="Settings">
-    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/>
-      <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
-    </svg>
-    <span>CONFIG</span>
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+    <span>CFG</span>
   </button>
 </aside>
 
-<!-- ─── MAIN ──────────────────────────────────────── -->
 <div class="main">
-
-  <!-- TOPBAR -->
   <div class="topbar">
     <div>
       <div class="topbar-title">SHOPIFY HUNTER</div>
-      <div class="topbar-sub" id="topbar-sub">AI-Powered Lead Generation Agent</div>
+      <div class="topbar-sub">AI Lead Agent — No-Payment Store Finder</div>
     </div>
     <div class="topbar-right">
-      <span class="status-dot" id="status-dot"></span>
-      <span class="status-text" id="status-text">IDLE</span>
+      <span class="sdot" id="sdot"></span>
+      <span class="stxt" id="stxt">IDLE</span>
     </div>
   </div>
 
-  <!-- STATS -->
   <div class="stats-row">
-    <div class="stat-card">
-      <div class="stat-label">TOTAL LEADS</div>
-      <div class="stat-value" id="stat-leads">0</div>
-    </div>
-    <div class="stat-card green">
-      <div class="stat-label">EMAILS SENT</div>
-      <div class="stat-value" id="stat-emails">0</div>
-    </div>
-    <div class="stat-card" style="--accent:#b06dff">
-      <div class="stat-label">EMAILS OPENED</div>
-      <div class="stat-value" id="stat-opened">0</div>
-    </div>
-    <div class="stat-card yellow">
-      <div class="stat-label">KEYWORDS</div>
-      <div class="stat-value" id="stat-kws">0</div>
-    </div>
-    <div class="stat-card red">
-      <div class="stat-label">KW USED</div>
-      <div class="stat-value" id="stat-used">0</div>
-    </div>
+    <div class="stat-card"><div class="stat-label">TOTAL LEADS</div><div class="stat-value" id="s-leads">0</div></div>
+    <div class="stat-card green"><div class="stat-label">EMAILS SENT</div><div class="stat-value" id="s-emails">0</div></div>
+    <div class="stat-card yellow"><div class="stat-label">KEYWORDS</div><div class="stat-value" id="s-kws">0</div></div>
+    <div class="stat-card red"><div class="stat-label">KW USED</div><div class="stat-value" id="s-used">0</div></div>
   </div>
 
-  <!-- CONTENT -->
   <div class="content">
 
-    <!-- ── SCREEN: LIVE ───────────────────────────── -->
+    <!-- LIVE -->
     <div class="screen active" id="screen-live">
       <div class="panel" style="flex:1">
         <div class="panel-head">
-          <h3>⚡ Live Automation Monitor</h3>
-          <div class="live-badge" id="live-badge" style="display:none">
-            <span class="status-dot running"></span> LIVE
-          </div>
-          <div style="margin-left:auto; display:flex; gap:8px;">
-            <button class="btn btn-primary btn-sm" id="btn-start" onclick="startAutomation()">
-              ▶ START
-            </button>
-            <button class="btn btn-danger btn-sm" id="btn-stop" onclick="stopAutomation()" disabled>
-              ■ STOP
-            </button>
-            <button class="btn btn-ghost btn-sm" onclick="clearTerminal()">CLR</button>
+          <h3>⚡ Live Monitor</h3>
+          <div class="live-badge" id="live-badge" style="display:none"><span class="sdot running"></span>LIVE</div>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="btn btn-primary btn-sm" id="btn-start" onclick="startAuto()">▶ START</button>
+            <button class="btn btn-danger btn-sm" id="btn-stop" onclick="stopAuto()" disabled>■ STOP</button>
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('ti').innerHTML=''">CLR</button>
           </div>
         </div>
         <div class="panel-body">
           <div class="terminal" id="terminal">
-            <div class="terminal-inner" id="terminal-inner">
-              <div class="log-line INFO">
-                <span class="log-time">[SYS] </span>
-                <span class="log-msg">SHOPIFY HUNTER v1.0 — Ready. Configure settings and press START.</span>
-              </div>
+            <div class="ti" id="ti">
+              <div class="ll INFO"><span class="lt">[SYS] </span><span class="lm">SHOPIFY HUNTER — Ready. Configure settings then START.</span></div>
             </div>
-            <span class="terminal-cursor"></span>
+            <span class="tc"></span>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- ── SCREEN: LEADS (Keywords) ──────────────── -->
+    <!-- KEYWORDS -->
     <div class="screen" id="screen-leads">
       <div class="panel">
         <div class="panel-head">
-          <h3>🎯 Custom Target Keywords</h3>
-          <div style="margin-left:auto; display:flex; gap:8px;">
-            <button class="btn btn-ghost btn-sm" onclick="resetKeywords()">↺ Reset Used</button>
+          <h3>🎯 Target Keywords</h3>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="btn btn-ghost btn-sm" onclick="resetKws()">↺ Reset Used</button>
           </div>
         </div>
         <div class="panel-body">
           <div class="form-row">
-            <div class="field">
-              <label>Keyword</label>
-              <input id="kw-input" placeholder="e.g. clothing, electronics, shoes..." />
-            </div>
-            <div class="field" style="max-width:200px">
-              <label>Country</label>
-              <input id="kw-country" placeholder="e.g. USA, UK, Canada..." />
-            </div>
-            <button class="btn btn-primary" onclick="addKeyword()" style="align-self:flex-end">
-              + ADD
-            </button>
+            <div class="field"><label>Keyword</label><input id="kw-input" placeholder="e.g. clothing, shoes, jewelry..."/></div>
+            <div class="field" style="max-width:200px"><label>Country</label><input id="kw-country" placeholder="e.g. USA, UK, Canada..."/></div>
+            <button class="btn btn-primary" onclick="addKw()" style="align-self:flex-end">+ ADD</button>
           </div>
           <div id="kw-alert" class="alert"></div>
-          <div class="kw-list" id="kw-list">
-            <div class="empty-state"><div class="icon">🔍</div>No keywords yet. Add your first target.</div>
-          </div>
+          <div class="kw-list" id="kw-list"><div class="empty"><div class="icon">🔍</div>No keywords yet.</div></div>
         </div>
       </div>
     </div>
 
-    <!-- ── SCREEN: DATA (Leads Table) ────────────── -->
+    <!-- DATA -->
     <div class="screen" id="screen-data">
       <div class="panel" style="flex:1">
         <div class="panel-head">
           <h3>📊 Collected Leads</h3>
-          <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
-            <span id="leads-count" style="font-family:'Share Tech Mono',monospace; font-size:11px; color:var(--text-dim)">0 records</span>
-            <a href="/api/leads/export" class="btn btn-success btn-sm" download>⬇ CSV Export</a>
-            <button class="btn btn-ghost btn-sm" onclick="loadLeads()">↺ Refresh</button>
+          <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+            <span id="leads-count" style="font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim)">0 records</span>
+            <button class="btn btn-success btn-sm" onclick="exportCSV()">⬇ CSV</button>
+            <button class="btn btn-ghost btn-sm" onclick="loadLeads()">↺</button>
           </div>
         </div>
         <div class="panel-body" style="padding:0">
-          <div class="leads-table-wrap">
+          <div class="leads-wrap">
             <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>STORE NAME</th>
-                  <th>URL</th>
-                  <th>EMAIL</th>
-                  <th>PHONE</th>
-                  <th>COUNTRY</th>
-                  <th>KEYWORD</th>
-                  <th>EMAIL SENT</th>
-                </tr>
-              </thead>
-              <tbody id="leads-tbody">
-                <tr><td colspan="8"><div class="empty-state"><div class="icon">📭</div>No leads collected yet.</div></td></tr>
-              </tbody>
+              <thead><tr><th>#</th><th>STORE</th><th>URL</th><th>EMAIL</th><th>PHONE</th><th>COUNTRY</th><th>EMAIL</th></tr></thead>
+              <tbody id="leads-tbody"><tr><td colspan="7"><div class="empty"><div class="icon">📭</div>No leads yet.</div></td></tr></tbody>
             </table>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- ── SCREEN: TEMPLATES ──────────────────────── -->
+    <!-- TEMPLATES -->
     <div class="screen" id="screen-templates">
       <div class="panel">
         <div class="panel-head"><h3>✉️ Email Templates</h3></div>
         <div class="panel-body">
-          <div class="field" style="margin-bottom:10px">
-            <label>Template Name</label>
-            <input id="tpl-name" placeholder="e.g. Payment Gateway Pitch" />
+          <div class="field" style="margin-bottom:10px"><label>Template Name</label><input id="tpl-name" placeholder="e.g. Payment Gateway Pitch"/></div>
+          <div class="field" style="margin-bottom:10px"><label>Subject</label><input id="tpl-subject" placeholder="e.g. Your store is missing one thing..."/></div>
+          <div class="field" style="margin-bottom:10px"><label>Body (AI personalizes this per store)</label>
+            <textarea id="tpl-body" style="min-height:130px" placeholder="Hi,&#10;&#10;I noticed your Shopify store doesn't have a payment gateway set up yet — which means you're unable to accept orders right now.&#10;&#10;I help store owners like you get set up quickly. Would love to help if you're interested.&#10;&#10;Best,&#10;[Your Name]"></textarea>
           </div>
-          <div class="field" style="margin-bottom:10px">
-            <label>Subject Line</label>
-            <input id="tpl-subject" placeholder="e.g. Your store is ready — missing one thing" />
-          </div>
-          <div class="field" style="margin-bottom:10px">
-            <label>Body (AI will personalize this)</label>
-            <textarea id="tpl-body" style="min-height:140px" placeholder="Write your base email template here. Mention the pain point (no payment gateway = losing customers), your solution, and a soft CTA. AI will personalize this for each store."></textarea>
-          </div>
-          <div id="tpl-alert" class="alert" style="margin-bottom:10px"></div>
-          <button class="btn btn-primary" onclick="addTemplate()">+ ADD TEMPLATE</button>
-          <div style="margin-top:16px" id="tpl-list">
-            <div class="empty-state"><div class="icon">📝</div>No templates yet.</div>
-          </div>
+          <div id="tpl-alert" class="alert"></div>
+          <button class="btn btn-primary" onclick="addTpl()">+ ADD TEMPLATE</button>
+          <div class="tpl-list" id="tpl-list" style="margin-top:12px"><div class="empty"><div class="icon">📝</div>No templates yet.</div></div>
         </div>
       </div>
     </div>
 
-    <!-- ── SCREEN: SCHEDULE ───────────────────────── -->
-    <div class="screen" id="screen-schedule">
-      <div class="panel">
-        <div class="panel-head"><h3>⏰ Automation Schedule</h3></div>
-        <div class="panel-body">
-          <div class="form-row" style="margin-bottom:16px">
-            <div class="field">
-              <label>Schedule Date & Time</label>
-              <input type="datetime-local" id="sched-input" />
-            </div>
-            <button class="btn btn-primary" onclick="saveSchedule()" style="align-self:flex-end">
-              📅 SET SCHEDULE
-            </button>
-            <button class="btn btn-danger btn-sm" onclick="clearSchedule()" style="align-self:flex-end">
-              ✕ CLEAR
-            </button>
-          </div>
-          <div id="sched-alert" class="alert"></div>
-          <div id="sched-display" class="schedule-display" style="display:none">
-            <div style="font-size:11px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;margin-bottom:12px;letter-spacing:2px;">SCHEDULED RUN</div>
-            <div class="schedule-time" id="sched-time-display"></div>
-            <div class="schedule-date" id="sched-date-display"></div>
-            <div class="countdown" id="countdown"></div>
-          </div>
-          <div style="margin-top:16px;padding:14px;background:var(--bg);border-radius:8px;border:1px solid var(--border);">
-            <div style="font-size:10px;letter-spacing:1px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;margin-bottom:8px;">HOW SCHEDULE WORKS</div>
-            <div style="font-size:12px;line-height:1.8;color:var(--text);">
-              At the scheduled time, automation starts automatically:<br>
-              <span style="color:var(--cyan)">①</span> Loads unused keywords from your list<br>
-              <span style="color:var(--cyan)">②</span> Scrapes Shopify stores without payment gateways<br>
-              <span style="color:var(--cyan)">③</span> Collects leads until target is reached<br>
-              <span style="color:var(--cyan)">④</span> Sends personalized emails to all leads
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── SCREEN: SETTINGS ───────────────────────── -->
+    <!-- SETTINGS -->
     <div class="screen" id="screen-settings">
-      <!-- API Keys -->
       <div class="panel">
-        <div class="panel-head"><h3>🔑 API Configuration</h3></div>
+        <div class="panel-head"><h3>⚙️ API Configuration</h3></div>
         <div class="panel-body">
-          <div class="form-row" style="margin-bottom:12px">
-            <div class="field">
-              <label>Groq API Key</label>
-              <input type="password" id="cfg-groq" placeholder="gsk_..." />
-            </div>
-            <div class="field">
-              <label>Serper API Key <a href="https://serper.dev" target="_blank" style="color:var(--cyan);font-size:10px">→ Get free key (2500 searches)</a></label>
-              <input type="password" id="cfg-serper" placeholder="Paste Serper API key..." />
-            </div>
-            <div class="field" style="max-width:140px">
-              <label>Min Leads Target</label>
-              <input type="number" id="cfg-min-leads" value="500" min="50" max="2000" />
-            </div>
+          <div class="info-box" style="margin-bottom:14px">
+            <span class="step">ℹ️ </span>All settings are saved in your <b>Google Sheet → Config tab</b>.<br>
+            Changes here update the sheet directly.
           </div>
-          <button class="btn btn-primary btn-sm" onclick="saveSettings()">💾 SAVE SETTINGS</button>
-          <div id="cfg-alert" class="alert" style="margin-top:10px"></div>
+          <div class="cfg-grid">
+            <div class="field"><label>Groq API Key</label><input type="password" id="cfg-groq" placeholder="gsk_..."/></div>
+            <div class="field"><label>Serper API Key <a href="https://serper.dev" target="_blank" style="color:var(--cyan);font-size:10px">→ Free at serper.dev</a></label><input type="password" id="cfg-serper" placeholder="..."/></div>
+            <div class="field"><label>Min Leads Target</label><input type="number" id="cfg-min" value="50" min="10" max="2000"/></div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveConfig()">💾 SAVE TO SHEET</button>
+          <div id="cfg-alert" class="alert"></div>
         </div>
       </div>
 
-      <!-- Connect Email -->
       <div class="panel">
-        <div class="panel-head"><h3>📧 Connect Gmail via Apps Script</h3></div>
+        <div class="panel-head"><h3>📋 Google Sheet Setup Guide</h3></div>
         <div class="panel-body">
-
-          <div class="instructions" style="margin-bottom:14px">
-            <div style="font-size:10px;letter-spacing:2px;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-bottom:8px;">SETUP INSTRUCTIONS</div>
-            <span class="step">① </span>Go to <a href="https://script.google.com" target="_blank" style="color:var(--cyan)">script.google.com</a> and create a New Project<br>
-            <span class="step">② </span>Delete all code and paste the script below<br>
-            <span class="step">③ </span>Click <b>Deploy → New Deployment → Web App</b><br>
-            <span class="step">④ </span>Set "Execute as: Me" and "Who has access: Anyone"<br>
-            <span class="step">⑤ </span>Click Deploy → Authorize → Copy the Web App URL<br>
-            <span class="step">⑥ </span>Paste the URL below and click Connect
+          <div class="info-box">
+            <span class="step">① </span>Go to <a href="https://sheets.google.com" target="_blank" style="color:var(--cyan)">sheets.google.com</a> → Create new spreadsheet<br>
+            <span class="step">② </span>Name it: <b>Shopify Hunter DB</b><br>
+            <span class="step">③ </span>Create 4 tabs: <b>Config, Keywords, Leads, Templates</b><br>
+            <span class="step">④ </span>Go to <b>Extensions → Apps Script</b><br>
+            <span class="step">⑤ </span>Paste the Apps Script code (download from GitHub)<br>
+            <span class="step">⑥ </span>Run <b>setupSheets()</b> function once<br>
+            <span class="step">⑦ </span>Deploy → Web App → Execute as Me → Anyone<br>
+            <span class="step">⑧ </span>Copy URL → Add to Render as <b>APPS_SCRIPT_URL</b> environment variable<br>
+            <span class="step">⑨ </span>Redeploy Render → Done!
           </div>
-
-          <div style="font-size:10px;letter-spacing:1px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;margin-bottom:6px;">APPS SCRIPT CODE</div>
-          <div style="position:relative;margin-bottom:14px">
-            <button class="copy-btn" onclick="copyScript()">COPY</button>
-            <div class="script-box" id="script-box">function doPost(e) {
-  var data = JSON.parse(e.postData.contents);
-  var action = data.action;
-
-  if (action === 'save_lead') {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getActiveSheet();
-    if (sheet.getLastRow() === 0) {
-      sheet.appendRow(['Date','Store Name','URL','Email','Phone','Country','Keyword']);
-    }
-    sheet.appendRow([
-      new Date(),
-      data.store_name || '',
-      data.url || '',
-      data.email || '',
-      data.phone || '',
-      data.country || '',
-      data.keyword || ''
-    ]);
-    return ContentService
-      .createTextOutput(JSON.stringify({status:'ok'}))
-      .setMimeType(ContentService.MimeType.JSON);
-  }
-
-  if (action === 'send_email') {
-    GmailApp.sendEmail(
-      data.to,
-      data.subject,
-      '',
-      {htmlBody: data.body, name: 'Your Name'}
-    );
-    return ContentService
-      .createTextOutput(JSON.stringify({status:'ok'}))
-      .setMimeType(ContentService.MimeType.JSON);
-  }
-
-  return ContentService
-    .createTextOutput(JSON.stringify({status:'unknown action'}))
-    .setMimeType(ContentService.MimeType.JSON);
-}</div>
+          <div id="conn-status" style="font-family:'Share Tech Mono',monospace;font-size:12px;padding:10px;border-radius:8px;background:var(--bg);border:1px solid var(--border)">
+            Checking connection...
           </div>
-
-          <div class="form-row">
-            <div class="field">
-              <label>Web App URL</label>
-              <input id="cfg-script-url" placeholder="https://script.google.com/macros/s/..." />
-            </div>
-            <button class="btn btn-success" onclick="connectScript()" style="align-self:flex-end">
-              🔗 CONNECT
-            </button>
-          </div>
-          <div id="connect-alert" class="alert" style="margin-top:10px"></div>
         </div>
       </div>
     </div>
 
-  </div><!-- /content -->
-</div><!-- /main -->
-</div><!-- /layout -->
+  </div>
+</div>
+</div>
 
 <script>
-// ─── STATE ──────────────────────────────────────────────────────────
-let currentScreen = 'live';
-let isRunning = false;
-let sseSource = null;
-let countdownTimer = null;
-let scheduledTime = null;
-
-// ─── NAVIGATION ─────────────────────────────────────────────────────
+// ── NAV ────────────────────────────────────────────────────────
 document.querySelectorAll('.nav-btn[data-screen]').forEach(btn => {
   btn.addEventListener('click', () => {
     const s = btn.dataset.screen;
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     document.querySelectorAll('.screen').forEach(el => el.classList.remove('active'));
-    document.getElementById('screen-' + s).classList.add('active');
-    currentScreen = s;
-    if (s === 'data') loadLeads();
-    if (s === 'leads') loadKeywords();
-    if (s === 'templates') loadTemplates();
-    if (s === 'settings') loadSettings();
-    if (s === 'schedule') loadSchedule();
+    document.getElementById('screen-'+s).classList.add('active');
+    if (s==='data') loadLeads();
+    if (s==='leads') loadKws();
+    if (s==='templates') loadTpls();
+    if (s==='settings') loadSettings();
   });
 });
 
-// ─── STATUS POLLING ──────────────────────────────────────────────────
+// ── Sheet API proxy ────────────────────────────────────────────
+async function sheet(payload) {
+  const r = await fetch('/api/sheet', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  return r.json();
+}
+
+// ── STATUS POLLING ─────────────────────────────────────────────
 async function pollStatus() {
   try {
-    const r = await fetch('/api/status');
-    const d = await r.json();
-    document.getElementById('stat-leads').textContent = d.total_leads;
-    document.getElementById('stat-emails').textContent = d.emails_sent;
-    document.getElementById('stat-kws').textContent = d.kw_total;
-    document.getElementById('stat-used').textContent = d.kw_used;
-    
-    isRunning = d.running;
-    const dot = document.getElementById('status-dot');
-    const txt = document.getElementById('status-text');
-    const badge = document.getElementById('live-badge');
-    const btnStart = document.getElementById('btn-start');
-    const btnStop = document.getElementById('btn-stop');
-    
-    if (isRunning) {
-      dot.classList.add('running');
-      txt.textContent = 'RUNNING';
-      badge.style.display = 'flex';
-      btnStart.disabled = true;
-      btnStop.disabled = false;
-    } else {
-      dot.classList.remove('running');
-      txt.textContent = 'IDLE';
-      badge.style.display = 'none';
-      btnStart.disabled = false;
-      btnStop.disabled = true;
+    const d = await (await fetch('/api/status')).json();
+    document.getElementById('s-leads').textContent = d.total_leads || 0;
+    document.getElementById('s-emails').textContent = d.emails_sent || 0;
+    document.getElementById('s-kws').textContent = d.kw_total || 0;
+    document.getElementById('s-used').textContent = d.kw_used || 0;
+    const running = d.running;
+    document.getElementById('sdot').className = 'sdot' + (running?' running':'');
+    document.getElementById('stxt').textContent = running ? 'RUNNING' : 'IDLE';
+    document.getElementById('live-badge').style.display = running ? 'flex' : 'none';
+    document.getElementById('btn-start').disabled = running;
+    document.getElementById('btn-stop').disabled = !running;
+    const cs = document.getElementById('conn-status');
+    if (cs) {
+      cs.style.color = d.script_connected ? 'var(--green)' : 'var(--red)';
+      cs.textContent = d.script_connected ? '✅ Apps Script connected!' : '❌ APPS_SCRIPT_URL not set in Render environment variables';
     }
-    
-    if (d.scheduled) {
-      scheduledTime = new Date(d.scheduled);
-    }
-  } catch(e) {}
+  } catch(e){}
 }
-setInterval(pollStatus, 3000);
+setInterval(pollStatus, 4000);
 pollStatus();
 
-// ─── SSE LOG STREAM ──────────────────────────────────────────────────
+// ── SSE LOGS ───────────────────────────────────────────────────
+let sse = null;
 function connectSSE() {
-  if (sseSource) sseSource.close();
-  sseSource = new EventSource('/api/logs/stream');
-  sseSource.onmessage = (e) => {
-    const data = JSON.parse(e.data);
-    if (data.ping) return;
-    appendLog(data);
+  if (sse) sse.close();
+  sse = new EventSource('/api/logs/stream');
+  sse.onmessage = e => {
+    const d = JSON.parse(e.data);
+    if (d.ping) return;
+    const ti = document.getElementById('ti');
+    const line = document.createElement('div');
+    line.className = 'll ' + (d.level||'INFO');
+    line.innerHTML = `<span class="lt">[${d.time}] </span><span class="lm">${esc(d.message)}</span>`;
+    ti.appendChild(line);
+    while (ti.children.length > 200) ti.removeChild(ti.firstChild);
+    const t = document.getElementById('terminal');
+    t.scrollTop = t.scrollHeight;
   };
-  sseSource.onerror = () => {
-    setTimeout(connectSSE, 3000);
-  };
+  sse.onerror = () => setTimeout(connectSSE, 3000);
 }
-
-function appendLog(entry) {
-  const inner = document.getElementById('terminal-inner');
-  const line = document.createElement('div');
-  line.className = `log-line ${entry.level || 'INFO'}`;
-  line.innerHTML = `<span class="log-time">[${entry.time}] </span><span class="log-msg">${escHtml(entry.message)}</span>`;
-  inner.appendChild(line);
-  // Keep max 200 lines
-  while (inner.children.length > 200) inner.removeChild(inner.firstChild);
-  const terminal = document.getElementById('terminal');
-  terminal.scrollTop = terminal.scrollHeight;
-}
-
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-function clearTerminal() {
-  document.getElementById('terminal-inner').innerHTML = '';
-}
-
-// Load last 50 logs on start
-async function loadInitialLogs() {
-  try {
-    const r = await fetch('/api/logs');
-    const logs = await r.json();
-    logs.slice(-50).forEach(l => appendLog({time: l.created_at?.split(' ')[1]?.slice(0,8) || '--:--:--', level: l.level, message: l.message}));
-  } catch(e) {}
-}
-loadInitialLogs();
 connectSSE();
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-// ─── AUTOMATION ───────────────────────────────────────────────────────
-async function startAutomation() {
-  const r = await fetch('/api/automation/start', {method:'POST'});
-  const d = await r.json();
-  if (d.status === 'already_running') {
-    alert('Automation is already running!');
-  }
+// ── AUTOMATION ─────────────────────────────────────────────────
+async function startAuto() {
+  await fetch('/api/automation/start', {method:'POST'});
   pollStatus();
 }
-
-async function stopAutomation() {
+async function stopAuto() {
   await fetch('/api/automation/stop', {method:'POST'});
   pollStatus();
 }
 
-// ─── KEYWORDS ─────────────────────────────────────────────────────────
-async function loadKeywords() {
-  const r = await fetch('/api/keywords');
-  const kws = await r.json();
+// ── KEYWORDS ──────────────────────────────────────────────────
+async function loadKws() {
+  const d = await sheet({action:'get_keywords'});
+  const kws = d.keywords || [];
   const list = document.getElementById('kw-list');
-  if (!kws.length) {
-    list.innerHTML = '<div class="empty-state"><div class="icon">🔍</div>No keywords yet. Add your first target.</div>';
-    return;
-  }
+  if (!kws.length) { list.innerHTML = '<div class="empty"><div class="icon">🔍</div>No keywords yet.</div>'; return; }
   list.innerHTML = kws.map(k => `
     <div class="kw-item">
-      <span class="kw-badge ${k.used ? 'used' : 'ready'}">${k.used ? 'USED' : 'READY'}</span>
-      <span class="kw-name">${escHtml(k.keyword)}</span>
-      <span class="kw-country">${escHtml(k.country)}</span>
-      ${k.leads_found ? `<span class="kw-leads">${k.leads_found} leads</span>` : ''}
-      <button class="kw-del" onclick="deleteKeyword(${k.id})" title="Delete">✕</button>
-    </div>
-  `).join('');
+      <span class="badge ${k.status==='used'?'used':'ready'}">${k.status==='used'?'USED':'READY'}</span>
+      <span class="kw-name">${esc(k.keyword)}</span>
+      <span class="kw-country">${esc(k.country)}</span>
+      ${k.leads_found ? `<span style="font-size:11px;color:var(--text-dim)">${k.leads_found} leads</span>` : ''}
+      <button class="del-btn" onclick="delKw('${k.id}')">✕</button>
+    </div>`).join('');
 }
 
-async function addKeyword() {
+async function addKw() {
   const kw = document.getElementById('kw-input').value.trim();
-  const country = document.getElementById('kw-country').value.trim();
-  const alert = document.getElementById('kw-alert');
-  if (!kw || !country) {
-    showAlert(alert, 'error', 'Fill in both keyword and country!');
-    return;
-  }
-  await fetch('/api/keywords', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keyword:kw, country})});
-  document.getElementById('kw-input').value = '';
-  document.getElementById('kw-country').value = '';
-  showAlert(alert, 'success', `✅ Keyword "${kw}" added!`);
-  loadKeywords();
+  const co = document.getElementById('kw-country').value.trim();
+  const al = document.getElementById('kw-alert');
+  if (!kw||!co) { showAlert(al,'error','Fill both fields!'); return; }
+  await sheet({action:'add_keyword', keyword:kw, country:co});
+  document.getElementById('kw-input').value='';
+  document.getElementById('kw-country').value='';
+  showAlert(al,'success',`✅ "${kw}" added!`);
+  loadKws();
 }
 
-async function deleteKeyword(id) {
-  if (!confirm('Delete this keyword?')) return;
-  await fetch('/api/keywords/'+id, {method:'DELETE'});
-  loadKeywords();
+async function delKw(id) {
+  if (!confirm('Delete?')) return;
+  await sheet({action:'delete_keyword', id});
+  loadKws();
 }
 
-async function resetKeywords() {
-  if (!confirm('Reset all keywords to READY? This allows them to be used again.')) return;
-  await fetch('/api/keywords/reset', {method:'POST'});
-  loadKeywords();
+async function resetKws() {
+  if (!confirm('Reset all keywords to READY?')) return;
+  await sheet({action:'reset_keywords'});
+  loadKws();
 }
 
-// ─── TEMPLATES ────────────────────────────────────────────────────────
-async function loadTemplates() {
-  const r = await fetch('/api/templates');
-  const tpls = await r.json();
+// ── TEMPLATES ─────────────────────────────────────────────────
+async function loadTpls() {
+  const d = await sheet({action:'get_templates'});
+  const tpls = d.templates || [];
   const list = document.getElementById('tpl-list');
-  if (!tpls.length) {
-    list.innerHTML = '<div class="empty-state"><div class="icon">📝</div>No templates yet.</div>';
-    return;
-  }
+  if (!tpls.length) { list.innerHTML = '<div class="empty"><div class="icon">📝</div>No templates yet.</div>'; return; }
   list.innerHTML = tpls.map(t => `
     <div class="tpl-item">
-      <div class="tpl-header">
-        <span class="tpl-name">${escHtml(t.name)}</span>
-        <button class="kw-del" onclick="deleteTemplate(${t.id})">✕</button>
+      <div style="flex:1">
+        <div style="font-family:'Orbitron',monospace;font-size:12px;color:var(--cyan);margin-bottom:4px">${esc(t.name)}</div>
+        <div style="font-size:11px;color:var(--text-dim)">Subject: ${esc(t.subject)}</div>
+        <div style="font-size:11px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:400px">${esc(t.body)}</div>
       </div>
-      <div class="tpl-subject">Subject: ${escHtml(t.subject)}</div>
-      <div class="tpl-body-preview">${escHtml(t.body)}</div>
-    </div>
-  `).join('');
+      <button class="del-btn" onclick="delTpl('${t.id}')">✕</button>
+    </div>`).join('');
 }
 
-async function addTemplate() {
+async function addTpl() {
   const name = document.getElementById('tpl-name').value.trim();
   const subject = document.getElementById('tpl-subject').value.trim();
   const body = document.getElementById('tpl-body').value.trim();
-  const alert = document.getElementById('tpl-alert');
-  if (!name || !subject || !body) {
-    showAlert(alert, 'error', 'Fill in all fields!');
-    return;
-  }
-  await fetch('/api/templates', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, subject, body})});
-  document.getElementById('tpl-name').value = '';
-  document.getElementById('tpl-subject').value = '';
-  document.getElementById('tpl-body').value = '';
-  showAlert(alert, 'success', `✅ Template "${name}" added!`);
-  loadTemplates();
+  const al = document.getElementById('tpl-alert');
+  if (!name||!subject||!body) { showAlert(al,'error','Fill all fields!'); return; }
+  await sheet({action:'add_template', name, subject, body});
+  document.getElementById('tpl-name').value='';
+  document.getElementById('tpl-subject').value='';
+  document.getElementById('tpl-body').value='';
+  showAlert(al,'success',`✅ Template added!`);
+  loadTpls();
 }
 
-async function deleteTemplate(id) {
-  if (!confirm('Delete this template?')) return;
-  await fetch('/api/templates/'+id, {method:'DELETE'});
-  loadTemplates();
+async function delTpl(id) {
+  if (!confirm('Delete?')) return;
+  await sheet({action:'delete_template', id});
+  loadTpls();
 }
 
-// ─── LEADS DATA ───────────────────────────────────────────────────────
+// ── LEADS DATA ─────────────────────────────────────────────────
 async function loadLeads() {
-  const r = await fetch('/api/leads?page=1');
-  const d = await r.json();
-  document.getElementById('leads-count').textContent = d.total + ' records';
+  const d = await sheet({action:'get_leads'});
+  const leads = d.leads || [];
+  document.getElementById('leads-count').textContent = leads.length + ' records';
   const tbody = document.getElementById('leads-tbody');
-  if (!d.leads.length) {
-    tbody.innerHTML = '<tr><td colspan="8"><div class="empty-state"><div class="icon">📭</div>No leads yet.</div></td></tr>';
-    return;
-  }
-  tbody.innerHTML = d.leads.map((l,i) => `
+  if (!leads.length) { tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><div class="icon">📭</div>No leads yet.</div></td></tr>'; return; }
+  tbody.innerHTML = leads.slice().reverse().map(l => `
     <tr>
-      <td style="color:var(--text-dim)">${l.id}</td>
-      <td style="max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(l.store_name||'—')}</td>
-      <td><a href="${escHtml(l.url)}" target="_blank" style="color:var(--cyan);font-size:11px;font-family:'Share Tech Mono',monospace">${escHtml((l.url||'').replace('https://',''))}</a></td>
-      <td style="font-family:'Share Tech Mono',monospace;font-size:11px">${escHtml(l.email||'—')}</td>
-      <td style="font-family:'Share Tech Mono',monospace;font-size:11px">${escHtml(l.phone||'—')}</td>
-      <td>${escHtml(l.country||'—')}</td>
-      <td style="font-size:11px">${escHtml(l.keyword||'—')}</td>
-      <td><span class="tag-sent ${l.email_sent?'yes':'no'}">${l.email_sent?'✓ SENT':'PENDING'}</span></td>
-    </tr>
-  `).join('');
+      <td style="color:var(--text-dim);font-size:11px">${l.id||''}</td>
+      <td style="max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(l.store_name||'—')}</td>
+      <td><a href="${esc(l.url||'')}" target="_blank" style="color:var(--cyan);font-size:11px;font-family:'Share Tech Mono',monospace">${esc((l.url||'').replace('https://',''))}</a></td>
+      <td style="font-family:'Share Tech Mono',monospace;font-size:11px">${esc(l.email||'—')}</td>
+      <td style="font-size:11px">${esc(l.phone||'—')}</td>
+      <td>${esc(l.country||'—')}</td>
+      <td><span class="tag ${l.email_sent==='sent'?'sent':'pending'}">${l.email_sent==='sent'?'✓ SENT':'PENDING'}</span></td>
+    </tr>`).join('');
 }
 
-// ─── SCHEDULE ─────────────────────────────────────────────────────────
-async function loadSchedule() {
-  const r = await fetch('/api/settings');
-  const cfg = await r.json();
-  if (cfg.scheduled_time) {
-    showScheduleDisplay(cfg.scheduled_time);
-  }
-}
-
-async function saveSchedule() {
-  const val = document.getElementById('sched-input').value;
-  if (!val) return showAlert(document.getElementById('sched-alert'), 'error', 'Pick a date and time!');
-  const r = await fetch('/api/schedule', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({time:val})});
-  const d = await r.json();
-  if (d.status === 'scheduled') {
-    showAlert(document.getElementById('sched-alert'), 'success', '✅ Scheduled successfully!');
-    showScheduleDisplay(val);
-  } else {
-    showAlert(document.getElementById('sched-alert'), 'error', 'Error: ' + (d.msg||'unknown'));
-  }
-}
-
-async function clearSchedule() {
-  await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({scheduled_time:''})});
-  document.getElementById('sched-display').style.display = 'none';
-  if (countdownTimer) clearInterval(countdownTimer);
-  showAlert(document.getElementById('sched-alert'), 'info', 'Schedule cleared.');
-}
-
-function showScheduleDisplay(isoStr) {
-  const dt = new Date(isoStr);
-  scheduledTime = dt;
-  document.getElementById('sched-display').style.display = 'block';
-  document.getElementById('sched-time-display').textContent = dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit'});
-  document.getElementById('sched-date-display').textContent = dt.toLocaleDateString('en',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
-  if (countdownTimer) clearInterval(countdownTimer);
-  updateCountdown(dt);
-  countdownTimer = setInterval(() => updateCountdown(dt), 1000);
-}
-
-function updateCountdown(target) {
-  const now = new Date();
-  const diff = target - now;
-  const el = document.getElementById('countdown');
-  if (diff <= 0) {
-    el.textContent = '🚀 TRIGGERED!';
-    return;
-  }
-  const h = Math.floor(diff/3600000);
-  const m = Math.floor((diff%3600000)/60000);
-  const s = Math.floor((diff%60000)/1000);
-  el.textContent = `⏱ ${h}h ${m}m ${s}s until launch`;
-}
-
-// ─── SETTINGS ─────────────────────────────────────────────────────────
-async function loadSettings() {
-  const r = await fetch('/api/settings');
-  const cfg = await r.json();
-  if (cfg.groq_api_key) document.getElementById('cfg-groq').value = cfg.groq_api_key;
-  if (cfg.serper_api_key) document.getElementById('cfg-serper').value = cfg.serper_api_key;
-  if (cfg.min_leads) document.getElementById('cfg-min-leads').value = cfg.min_leads;
-  if (cfg.apps_script_url) document.getElementById('cfg-script-url').value = cfg.apps_script_url;
-}
-
-async function saveSettings() {
-  const groq = document.getElementById('cfg-groq').value.trim();
-  const serper = document.getElementById('cfg-serper').value.trim();
-  const minLeads = document.getElementById('cfg-min-leads').value;
-  const alert = document.getElementById('cfg-alert');
-  if (!groq) return showAlert(alert, 'error', 'Groq API key is required!');
-  if (!serper) return showAlert(alert, 'error', 'Serper API key is required! Get free key at serper.dev');
-  await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({groq_api_key:groq, serper_api_key:serper, min_leads:minLeads})});
-  showAlert(alert, 'success', '✅ Settings saved!');
-}
-
-async function connectScript() {
-  const url = document.getElementById('cfg-script-url').value.trim();
-  const alert = document.getElementById('connect-alert');
-  if (!url || !url.startsWith('https://script.google.com')) {
-    showAlert(alert, 'error', 'Enter a valid Apps Script web app URL!');
-    return;
-  }
-  await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({apps_script_url:url})});
-  showAlert(alert, 'success', '✅ Connected! Apps Script URL saved.');
-}
-
-function copyScript() {
-  const code = document.getElementById('script-box').innerText;
-  navigator.clipboard.writeText(code).then(() => {
-    const btn = document.querySelector('.copy-btn');
-    btn.textContent = '✓ COPIED';
-    setTimeout(() => btn.textContent = 'COPY', 2000);
+function exportCSV() {
+  sheet({action:'get_leads'}).then(d => {
+    const leads = d.leads || [];
+    if (!leads.length) { alert('No leads to export!'); return; }
+    const headers = ['ID','Store Name','URL','Email','Phone','Country','Keyword','Email Sent','Created At'];
+    const rows = leads.map(l => [l.id,l.store_name,l.url,l.email,l.phone,l.country,l.keyword,l.email_sent,l.created_at].map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(','));
+    const csv = [headers.join(','), ...rows].join('\n');
+    const a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+    a.download = 'shopify_leads.csv';
+    a.click();
   });
 }
 
-// ─── UTILS ────────────────────────────────────────────────────────────
+// ── SETTINGS ──────────────────────────────────────────────────
+async function loadSettings() {
+  const d = await sheet({action:'get_config'});
+  const cfg = d.config || {};
+  if (cfg.groq_api_key) document.getElementById('cfg-groq').value = cfg.groq_api_key;
+  if (cfg.serper_api_key) document.getElementById('cfg-serper').value = cfg.serper_api_key;
+  if (cfg.min_leads) document.getElementById('cfg-min').value = cfg.min_leads;
+}
+
+async function saveConfig() {
+  const groq = document.getElementById('cfg-groq').value.trim();
+  const serper = document.getElementById('cfg-serper').value.trim();
+  const min = document.getElementById('cfg-min').value;
+  const al = document.getElementById('cfg-alert');
+  if (!groq||!serper) { showAlert(al,'error','Both API keys required!'); return; }
+  const r = await sheet({action:'save_config', config:{groq_api_key:groq, serper_api_key:serper, min_leads:min}});
+  if (r.status==='ok') showAlert(al,'success','✅ Saved to Google Sheet!');
+  else showAlert(al,'error','Error: ' + JSON.stringify(r));
+}
+
+// ── UTILS ──────────────────────────────────────────────────────
 function showAlert(el, type, msg) {
-  el.className = `alert ${type} show`;
+  el.className = 'alert ' + type + ' show';
   el.textContent = msg;
   setTimeout(() => el.classList.remove('show'), 4000);
 }
