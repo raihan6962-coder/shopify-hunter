@@ -339,13 +339,16 @@ def _automation_inner():
     cfg = cfg_resp.get('config', {})
 
     groq_key = cfg.get('groq_api_key', '')
-    serper_key = cfg.get('serper_api_key', '')  # optional, not used in scraper
+    google_api_key = cfg.get('google_api_key', '')
+    cx_id = cfg.get('cx_id', '')
     min_leads = int(cfg.get('min_leads', '50'))
 
     if not groq_key:
-        log("❌ Groq API Key missing — add in Config sheet", "ERROR"); return
-    if not serper_key:
-        log("❌ Serper API Key missing — add in Config sheet", "ERROR"); return
+        log("❌ Groq API Key missing — add in CFG screen", "ERROR"); return
+    if not google_api_key:
+        log("❌ Google API Key missing — add in CFG screen", "ERROR"); return
+    if not cx_id:
+        log("❌ Google CX ID missing — add in CFG screen", "ERROR"); return
 
     # Load keywords
     kw_resp = call_sheet(script_url, {'action': 'get_keywords'})
