@@ -9,10 +9,10 @@ import requests
 from bs4 import BeautifulSoup
 from groq import Groq
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import os
-from duckduckgo_search import DDGS  # 🚀 NEW: Google এর বদলে DuckDuckGo
+from duckduckgo_search import DDGS
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
@@ -53,58 +53,97 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-# ── 1. ADVANCED SCRAPING (NO GOOGLE, NO FAKE LINKS, SUPER FAST) ───────────────
+# ── 1. ADVANCED SCRAPING (Recent stores only) ────────────────────────────────
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
+
+def search_serpapi_recent(keyword, country, serpapi_key):
+    """Use Google (via SerpAPI) to get myshopify.com results from the last week."""
+    if not serpapi_key:
+        return []
+    
+    params = {
+        'api_key': serpapi_key,
+        'engine': 'google',
+        'q': f'site:myshopify.com "{keyword}" {country}',
+        'tbs': 'qdr:w',          # last 7 days
+        'num': 50                # max results per page
+    }
+    all_urls = set()
+    
+    try:
+        resp = requests.get('https://serpapi.com/search', params=params, timeout=10)
+        data = resp.json()
+        organic = data.get('organic_results', [])
+        for r in organic:
+            link = r.get('link', '')
+            m = MYSHOPIFY_RE.search(link)
+            if m:
+                all_urls.add(f"https://{m.group(1)}.myshopify.com")
+    except Exception as e:
+        log(f"SerpAPI error: {e}", "WARN")
+    
+    return list(all_urls)
 
 def find_shopify_stores(keyword, country, serpapi_key):
     """
-    গুগল সার্চ সম্পূর্ণ বাদ! 
-    DuckDuckGo এবং Fast SSL Scan ব্যবহার করে শুধু আসল স্টোরগুলো বের করবে।
+    Prioritizes recent stores:
+    1. Google SerpAPI (last 7 days)
+    2. SSL certificate scan (last 30 days)
+    3. DuckDuckGo (fallback, no date filter)
     """
     all_urls = set()
     kw_clean = keyword.lower().replace(' ', '')
 
-    # METHOD 1: Fast SSL Scan (Time limit: 5 seconds only)
-    log(f"🔍 Scanning Global SSL Logs for '{keyword}'...", "INFO")
+    # METHOD 1: Google SerpAPI (most recent, most accurate)
+    if serpapi_key:
+        log(f"🔍 Searching Google via SerpAPI (last 7 days) for '{keyword}'...", "INFO")
+        serp_urls = search_serpapi_recent(keyword, country, serpapi_key)
+        all_urls.update(serp_urls)
+        log(f"   Found {len(serp_urls)} recent stores from SerpAPI", "INFO")
+
+    # METHOD 2: SSL Certificate Scan (last 30 days)
+    log(f"🔍 Scanning SSL logs (last 30 days) for '{keyword}'...", "INFO")
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        r = requests.get(f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", headers=headers, timeout=5)
+        cutoff = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        url = f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&excluded=expired&notBefore={cutoff}&output=json"
+        r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
             for entry in r.json():
                 name = entry.get('name_value', '').lower()
                 for domain in name.split('\n'):
                     if domain.endswith('.myshopify.com') and '*' not in domain:
                         all_urls.add(f"https://{domain}")
+        log(f"   Found {len([u for u in all_urls if 'myshopify' in u])} stores from SSL scan", "INFO")
     except Exception as e:
-        log("   SSL Scan skipped (Timeout) - Moving to DuckDuckGo", "WARN")
+        log(f"   SSL Scan skipped (Timeout/error) - {e}", "WARN")
 
-    # METHOD 2: DuckDuckGo Search (Bypassing Google completely)
-    log(f"🔍 Searching DuckDuckGo for live stores...", "INFO")
-    queries =[
-        f'site:myshopify.com "{keyword}" {country}',
-        f'site:myshopify.com "{keyword}" "powered by shopify"',
-        f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"'
-    ]
-    
-    try:
-        with DDGS() as ddgs:
-            for q in queries:
-                if len(all_urls) > 150:
-                    break
-                # DuckDuckGo থেকে রেজাল্ট আনবে
-                results = ddgs.text(q, max_results=40)
-                if results:
-                    for r in results:
-                        link = r.get('href', '')
-                        m = MYSHOPIFY_RE.search(link)
-                        if m:
-                            all_urls.add(f"https://{m.group(1)}.myshopify.com")
-                time.sleep(1.5)
-    except Exception as e:
-        log(f"   DuckDuckGo Search error: {e}", "WARN")
+    # METHOD 3: DuckDuckGo Search (fallback, no date filter)
+    if len(all_urls) < 50:   # only if we need more
+        log(f"🔍 Searching DuckDuckGo for '{keyword}'...", "INFO")
+        queries =[
+            f'site:myshopify.com "{keyword}" {country}',
+            f'site:myshopify.com "{keyword}" "powered by shopify"',
+            f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"'
+        ]
+        try:
+            with DDGS() as ddgs:
+                for q in queries:
+                    if len(all_urls) > 150:
+                        break
+                    results = ddgs.text(q, max_results=40)
+                    if results:
+                        for r in results:
+                            link = r.get('href', '')
+                            m = MYSHOPIFY_RE.search(link)
+                            if m:
+                                all_urls.add(f"https://{m.group(1)}.myshopify.com")
+                    time.sleep(1.5)
+        except Exception as e:
+            log(f"   DuckDuckGo Search error: {e}", "WARN")
 
     urls_list = list(all_urls)
-    log(f"📦 Found {len(urls_list)} REAL stores to test!", "INFO")
+    log(f"📦 Found {len(urls_list)} total stores to test!", "INFO")
     return urls_list
 
 # ── 2. STRICT CHECKOUT TEST (Fast & Accurate) ─────────────────────────────────
@@ -335,7 +374,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — FINDING STORES (DUCKDUCKGO) & CHECKING CHECKOUT", "SUCCESS")
+    log("🚀 PHASE 1 — FINDING RECENT STORES & CHECKING CHECKOUT", "SUCCESS")
     log(f"🎯 Target: {min_leads} leads from {len(ready_kws)} keywords", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
@@ -353,7 +392,7 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # Search for stores using DuckDuckGo + SSL
+        # Search for stores using the improved method
         try:
             store_urls = find_shopify_stores(keyword, country, serpapi_key)
         except Exception as e:
