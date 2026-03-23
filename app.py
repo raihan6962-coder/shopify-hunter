@@ -22,18 +22,26 @@ automation_thread = None
 scheduler = BackgroundScheduler()
 scheduler.start()
 
-# ── Apps Script communication ─────────────────────────────────────────────────
+# ── Apps Script communication (FIXED: Auto-Retry & Timeout) ───────────────────
 def call_sheet(payload):
     script_url = os.environ.get('APPS_SCRIPT_URL', '')
     if not script_url:
         return {'error': 'APPS_SCRIPT_URL not set'}
-    try:
-        r = requests.post(script_url, json=payload, timeout=25,
-                          headers={'Content-Type': 'application/json'})
-        return r.json()
-    except Exception as e:
-        log(f"Sheet API error: {e}", "WARN")
-        return {'error': str(e)}
+    
+    # গুগল শিট স্লো থাকলে বট ক্র্যাশ করবে না, ৩ বার চেষ্টা করবে
+    for attempt in range(3):
+        try:
+            r = requests.post(script_url, json=payload, timeout=45,
+                              headers={'Content-Type': 'application/json'})
+            return r.json()
+        except requests.exceptions.Timeout:
+            log(f"Sheet API timeout (Attempt {attempt+1}/3). Retrying...", "WARN")
+            time.sleep(3)
+        except Exception as e:
+            log(f"Sheet API error (Attempt {attempt+1}/3): {e}", "WARN")
+            time.sleep(3)
+            
+    return {'error': 'Sheet API failed after 3 retries'}
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 def log(message, level="INFO"):
@@ -59,7 +67,8 @@ def find_shopify_stores(keyword, country, serpapi_key):
     # METHOD 1: Global SSL Certificate Transparency Logs (Real-time new stores)
     log(f"🔍 Scanning Global SSL Logs for brand new '{keyword}' stores...", "INFO")
     try:
-        r = requests.get(f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", timeout=15)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        r = requests.get(f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", headers=headers, timeout=20)
         if r.status_code == 200:
             for entry in r.json():
                 name = entry.get('name_value', '').lower()
@@ -67,7 +76,7 @@ def find_shopify_stores(keyword, country, serpapi_key):
                     if domain.endswith('.myshopify.com') and '*' not in domain:
                         all_urls.add(f"https://{domain}")
     except Exception as e:
-        log("   SSL Scan timeout", "WARN")
+        log("   SSL Scan timeout (Moving to Google Search)", "WARN")
 
     # METHOD 2: Massive SerpAPI Search (More queries to get more results)
     log(f"🔍 Searching Google for live stores...", "INFO")
@@ -351,7 +360,7 @@ def _run():
         kw_id   = kw_row.get('id', '')
         kw_leads = 0
 
-        log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
+        log(f"\n🎯 Keyword: [{keyword}] | Country:[{country}]", "INFO")
 
         # Search for stores using the expanded method
         try:
