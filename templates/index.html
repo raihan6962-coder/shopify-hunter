@@ -255,9 +255,8 @@ tr:hover td{background:rgba(0,212,255,0.03)}
             Changes here update the sheet directly.
           </div>
           <div class="cfg-grid">
-            <div class="field"><label>Groq API Key</label><input type="password" id="cfg-groq" placeholder="gsk_..."/></div>
-            <div class="field"><label>Google API Key <a href="https://console.cloud.google.com" target="_blank" style="color:var(--cyan);font-size:10px">→ console.cloud.google.com</a></label><input type="password" id="cfg-google" placeholder="AIza..."/></div>
-            <div class="field"><label>Google CX ID <a href="https://cse.google.com/cse/all" target="_blank" style="color:var(--cyan);font-size:10px">→ cse.google.com</a></label><input id="cfg-cx" placeholder="Paste CX/Search Engine ID..."/></div>
+            <div class="field"><label>Groq API Key <a href="https://console.groq.com" target="_blank" style="color:var(--cyan);font-size:10px">→ console.groq.com (free)</a></label><input type="password" id="cfg-groq" placeholder="gsk_..."/></div>
+            <div class="field"><label>SerpAPI Key <a href="https://serpapi.com" target="_blank" style="color:var(--cyan);font-size:10px">→ serpapi.com (100 free/month)</a></label><input type="password" id="cfg-serpapi" placeholder="Paste SerpAPI key..."/></div>
             <div class="field"><label>Min Leads Target</label><input type="number" id="cfg-min" value="50" min="10" max="2000"/></div>
           </div>
           <button class="btn btn-primary btn-sm" onclick="saveConfig()">💾 SAVE TO SHEET</button>
@@ -489,19 +488,17 @@ async function loadSettings() {
   const d = await sheet({action:'get_config'});
   const cfg = d.config || {};
   if (cfg.groq_api_key) document.getElementById('cfg-groq').value = cfg.groq_api_key;
-  if (cfg.google_api_key) document.getElementById('cfg-google').value = cfg.google_api_key;
-  if (cfg.cx_id) document.getElementById('cfg-cx').value = cfg.cx_id;
+  if (cfg.serpapi_key) document.getElementById('cfg-serpapi').value = cfg.serpapi_key;
   if (cfg.min_leads) document.getElementById('cfg-min').value = cfg.min_leads;
 }
 
 async function saveConfig() {
   const groq = document.getElementById('cfg-groq').value.trim();
-  const google = document.getElementById('cfg-google').value.trim();
-  const cx = document.getElementById('cfg-cx').value.trim();
+  const serpapi = document.getElementById('cfg-serpapi').value.trim();
   const min = document.getElementById('cfg-min').value;
   const al = document.getElementById('cfg-alert');
-  if (!groq||!google||!cx) { showAlert(al,'error','Groq Key, Google API Key, and CX ID all required!'); return; }
-  const r = await sheet({action:'save_config', config:{groq_api_key:groq, google_api_key:google, cx_id:cx, min_leads:min}});
+  if (!groq || !serpapi) { showAlert(al,'error','Both Groq and SerpAPI keys required!'); return; }
+  const r = await sheet({action:'save_config', config:{groq_api_key:groq, serpapi_key:serpapi, min_leads:min}});
   if (r.status==='ok') showAlert(al,'success','✅ Saved to Google Sheet!');
   else showAlert(al,'error','Error: ' + JSON.stringify(r));
 }
