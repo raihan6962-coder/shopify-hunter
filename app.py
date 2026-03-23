@@ -48,43 +48,78 @@ def log(message, level="INFO"):
     entry = {'time': datetime.now().strftime('%H:%M:%S'), 'level': level, 'message': message}
     log_queue.put(json.dumps(entry))
 
-# ── Payment gateway detection — strict, cart-based ────────────────────────────
-PAYMENT_JS = [
-    'stripe.com/v3', 'stripe.js', 'js.stripe.com',
+# ── Payment gateway detection — comprehensive ─────────────────────────────────
+# Strong indicators — any ONE of these = has payment gateway
+PAYMENT_STRONG = [
+    'js.stripe.com', 'stripe.com/v3', 'stripe.js',
     'paypal.com/sdk', 'paypal.com/js', 'paypalobjects.com',
-    'shopify_payments', 'shop_pay', 'shop-pay-button',
-    'klarna.com/na/library', 'js.klarna.com',
-    'afterpay', 'clearpay',
-    'affirm.js', 'affirm.com/js',
-    'sezzle.com/js',
+    'data-paypal', 'paypal-button',
+    'shopify_payments', 'shop_pay', 'shop-pay',
+    'cdn.shopify.com/shopifycloud/shop-js',
+    'pay.shopify.com',
+    'js.klarna.com', 'klarna-payments',
+    'js.afterpay.com', 'clearpay.co.uk',
+    'cdn1.affirm.com', 'affirm.js',
+    'checkout.sezzle.com',
+    'apple-pay-button', 'google-pay',
+    '"shopify_payments"', "'shopify_payments'",
+    'Shopify.Checkout',
+    '"payment_gateway":[',
+    '"paymentGateway"',
 ]
 
-def check_cart_for_payment(base_url, session):
+def check_payment_gateway(base_url, session):
     """
-    Visit /cart page — if payment options show up, store has payment gateway.
-    Returns True if payment found, False if no payment (good lead!).
+    Returns True if store HAS a payment gateway (skip).
+    Returns False if NO payment gateway (this is our target!).
+    Checks: homepage HTML, window.Shopify JSON, /cart.js, /cart page
     """
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    }
+    ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
+    headers = {'User-Agent': ua, 'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9'}
     try:
-        # Check /cart page
-        r = session.get(base_url + '/cart', headers=headers, timeout=12)
-        html_lower = r.text.lower()
-        for js in PAYMENT_JS:
-            if js in html_lower:
+        # 1. Check homepage
+        r = session.get(base_url, headers=headers, timeout=15)
+        html = r.text
+        hl = html.lower()
+        for ind in PAYMENT_STRONG:
+            if ind.lower() in hl:
                 return True
-        # Check /checkout (might redirect but HTML might load)
-        # Also check homepage for payment JS
-        r2 = session.get(base_url, headers=headers, timeout=12)
-        html2 = r2.text.lower()
-        for js in PAYMENT_JS:
-            if js in html2:
+        # Check window.Shopify embedded object
+        m = re.search(r'window\.Shopify\s*=\s*(\{.*?\});', html, re.DOTALL)
+        if m:
+            try:
+                sd = json.loads(m.group(1))
+                if sd.get('paymentButton') or sd.get('Checkout'):
+                    return True
+            except:
+                pass
+        if '"payment_gateway"' in html or '"paymentGateway"' in html:
+            return True
+        if 'shop-pay-button' in hl or 'shopify-payment-button' in hl:
+            return True
+        # 2. Check /cart page
+        try:
+            cr = session.get(base_url + '/cart', headers=headers, timeout=10)
+            ch = cr.text.lower()
+            for ind in PAYMENT_STRONG:
+                if ind.lower() in ch:
+                    return True
+            if ('visa' in ch and 'mastercard' in ch) or 'shop pay' in ch or 'shoppay' in ch:
                 return True
+        except:
+            pass
+        # 3. Check /cart.js
+        try:
+            cjr = session.get(base_url + '/cart.js', headers=headers, timeout=8)
+            if cjr.status_code == 200:
+                cjl = cjr.text.lower()
+                if 'payment' in cjl and ('stripe' in cjl or 'paypal' in cjl or 'shopify_pay' in cjl):
+                    return True
+        except:
+            pass
         return False
     except:
-        return False
+        return True  # can't access = skip
 
 # ── Shopify detection ──────────────────────────────────────────────────────────
 def is_shopify_store(url, session):
@@ -317,7 +352,7 @@ def _automation_inner():
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
     log("🚀 SHOPIFY HUNTER STARTED", "SUCCESS")
-    log(f"🎯 Target: {min_leads} leads | {len(all_keywords)} keywords ready", "INFO")
+    log(f"🎯 Will collect until {min_leads} leads found | {len(all_keywords)} keywords ready", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     # ── PHASE 1: SCRAPING ────────────────────────────────────────────────────
@@ -362,7 +397,7 @@ def _automation_inner():
                 log(f"   ✅ Shopify confirmed", "INFO")
 
                 # Step 2: Does it have NO payment gateway?
-                has_payment = check_cart_for_payment(url, session)
+                has_payment = check_payment_gateway(url, session)
                 if has_payment:
                     log(f"   💳 Has payment gateway — skip", "INFO")
                     time.sleep(0.5)
