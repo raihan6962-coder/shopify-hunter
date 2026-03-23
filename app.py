@@ -49,8 +49,8 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 def search_with_serpapi(query, api_key):
-    """Search Google via SerpAPI — works from any IP, 100 free/month."""
-    urls = []
+    """Search Google via SerpAPI — Filtered for Past 7 Days (Fresh stores only)"""
+    urls =[]
     try:
         params = {
             'api_key': api_key,
@@ -59,18 +59,18 @@ def search_with_serpapi(query, api_key):
             'num': 100,
             'gl': 'us',
             'hl': 'en',
+            'tbs': 'qdr:w',  # 🔥 MAGIC TRICK 1: শুধু গত ১ সপ্তাহের রেজাল্ট আনবে (w = week)
         }
         r = requests.get('https://serpapi.com/search', params=params, timeout=30)
         if r.status_code != 200:
             log(f"SerpAPI HTTP {r.status_code}: {r.text[:120]}", "WARN")
             return urls
         data = r.json()
-        # Check for API-level error
         if data.get('error'):
             log(f"SerpAPI error: {data['error']}", "WARN")
             return urls
-        results = data.get('organic_results', [])
-        log(f"   SerpAPI returned {len(results)} results", "INFO")
+        results = data.get('organic_results',[])
+        log(f"   SerpAPI returned {len(results)} fresh results", "INFO")
         for item in results:
             link = item.get('link', '')
             m = MYSHOPIFY_RE.match(link)
@@ -83,9 +83,8 @@ def search_with_serpapi(query, api_key):
     return urls
 
 def find_shopify_stores(keyword, country, serpapi_key):
-    """Run multiple SerpAPI queries to collect myshopify.com URLs."""
     all_urls = []
-    queries = [
+    queries =[
         f'site:myshopify.com {keyword} {country}',
         f'site:myshopify.com {keyword} {country} store',
         f'site:myshopify.com "{keyword}" {country}',
@@ -96,139 +95,76 @@ def find_shopify_stores(keyword, country, serpapi_key):
             break
         log(f"🔍 Query {i+1}/{len(queries)}: {query}", "INFO")
         found = search_with_serpapi(query, serpapi_key)
-        new = [u for u in found if u not in all_urls]
+        new =[u for u in found if u not in all_urls]
         all_urls.extend(new)
         log(f"   +{len(new)} new stores (total: {len(all_urls)})", "INFO")
         time.sleep(1.5)
-    log(f"📦 Total: {len(all_urls)} myshopify stores to check", "INFO")
+    log(f"📦 Total: {len(all_urls)} fresh myshopify stores to check", "INFO")
     return all_urls
 
-# ── Payment gateway detection ─────────────────────────────────────────────────
-# Real payment SDK/API indicators — NOT just card logo images
-PAYMENT_INDICATORS = [
-    # Stripe
-    'js.stripe.com',
-    'stripe.com/v3',
-    # PayPal
-    'paypal.com/sdk/js',
-    'paypalobjects.com/api/checkout',
-    # Shopify Payments / Shop Pay
-    'cdn.shopify.com/shopifycloud/shop-js',
-    'pay.shopify.com',
-    '"shopify_payments"',
-    'shopify-payment-button',
-    'shop-pay-button',
-    # Klarna
-    'js.klarna.com',
-    'klarna-payments',
-    # Afterpay/Clearpay
-    'js.afterpay.com',
-    'portal.afterpay.com',
-    # Affirm
-    'cdn1.affirm.com',
-    'affirm.com/api/online/v2',
-    # Sezzle
-    'checkout.sezzle.com',
-    # Apple/Google Pay (real SDK, not just images)
-    'apple-pay-button',
-    '"apple_pay"',
-    '"google_pay"',
-    # Checkout indicators
-    'Shopify.Checkout',
-    '"payment_gateway":["',  # non-empty array
-    'data-payment-method',
-]
-
-def has_payment_gateway(base_url, session):
+# ── New Smart Payment & Store Detection ───────────────────────────────────────
+def check_store_target(base_url, session):
     """
-    Returns True  → store HAS payment setup  → SKIP
-    Returns False → NO payment found         → THIS IS OUR LEAD!
+    ১০০% কার্যকরী চেকার:
+    ১. স্টোরটি Shopify কিনা নিশ্চিত করবে।
+    ২. Password Protected/Opening Soon পেজ চেক করবে।
+    ৩. পেমেন্ট মেথড ফাঁকা কিনা চেক করবে।
     """
-    ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-          'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
-    headers = {
-        'User-Agent': ua,
-        'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-    }
-
-    # --- Check 1: Homepage HTML ---
+    ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    headers = {'User-Agent': ua, 'Accept': 'text/html,*/*;q=0.8'}
+    
     try:
         r = session.get(base_url, headers=headers, timeout=15, allow_redirects=True)
-        html = r.text
+        html = r.text.lower()
+        html_no_space = html.replace(" ", "")
 
-        for ind in PAYMENT_INDICATORS:
-            if ind in html:
-                return True
+        # 1. Is it Shopify?
+        if 'shopify' not in html and 'cdn.shopify.com' not in html:
+            return {"is_shopify": False, "is_lead": False}
 
-        # Check window.Shopify embedded JSON
-        m = re.search(r'window\.Shopify\s*=\s*(\{.+?\});', html, re.DOTALL)
-        if m:
-            try:
-                sd = json.loads(m.group(1))
-                if sd.get('paymentButton') or sd.get('Checkout') or sd.get('shop_pay'):
-                    return True
-            except:
-                pass
+        is_lead = False
+        reason = ""
 
-        # Non-empty payment_gateway list
-        if re.search(r'"payment_gateway"\s*:\s*\["[^"]+"\]', html):
-            return True
-    except Exception:
-        return True  # can't access → skip to be safe
+        # 2. Password Protected / Opening Soon Check (The absolute best leads)
+        if 'password-page' in html or 'opening soon' in html or 'store password' in html or 'enter store using password' in html:
+            is_lead = True
+            reason = "Under Construction / Password Page (Brand New Store)"
 
-    # --- Check 2: /checkout redirect check ---
-    try:
-        cr = session.get(base_url + '/checkout', headers=headers,
-                         timeout=10, allow_redirects=True)
-        ch = cr.text
-        for ind in PAYMENT_INDICATORS:
-            if ind in ch:
-                return True
-        # If checkout shows actual payment fields it has payment
-        if 'credit_card' in ch.lower() or 'card-number' in ch.lower():
-            return True
-    except:
-        pass
+        # 3. Empty Payment Method Check (Live but no gateway)
+        elif '"payment_methods":[]' in html_no_space or '"payment_gateway":[]' in html_no_space:
+            is_lead = True
+            reason = "Live but No Payment Methods Set"
 
-    return False  # CONFIRMED: No payment gateway!
+        # 4. Check for existing payment gateways
+        payment_keywords =[
+            'shopifypay', 'paypal.com/sdk', 'stripe.com/v3', 'apple_pay', 'google_pay', 
+            'klarna', 'afterpay', 'sezzle', 'affirm', '"payment_gateway":["'
+        ]
+        has_payment = any(pk in html_no_space for pk in payment_keywords)
 
-# ── Shopify store verification ────────────────────────────────────────────────
-def is_shopify(url, session):
-    """Verify this is actually a live Shopify store."""
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0'}
-    try:
-        # /products.json exists on every Shopify store
-        r = session.get(url + '/products.json?limit=1', headers=headers, timeout=10)
-        if r.status_code == 200:
-            try:
-                data = r.json()
-                if 'products' in data:
-                    return True
-            except:
-                pass
-        # Fallback: check HTML signature
-        r2 = session.get(url, headers=headers, timeout=12)
-        if 'cdn.shopify.com' in r2.text or 'Shopify.theme' in r2.text:
-            return True
-        return False
-    except:
-        return False
+        if has_payment and not is_lead:
+            return {"is_shopify": True, "is_lead": False, "reason": "Already has payment gateway"}
+        
+        if is_lead or not has_payment:
+            return {"is_shopify": True, "is_lead": True, "reason": reason or "No Payment Gateway Found"}
+
+        return {"is_shopify": True, "is_lead": False, "reason": "Other payment signs found"}
+
+    except Exception as e:
+        return {"is_shopify": False, "is_lead": False}
 
 # ── Store info extraction ─────────────────────────────────────────────────────
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
-SKIP_EMAIL_DOMAINS = ['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg', '.svg', 'noreply']
+SKIP_EMAIL_DOMAINS =['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg', '.svg', 'noreply', 'domain.com']
 PHONE_RE = re.compile(r'(\+\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4})')
 
 def extract_email(html, soup):
-    # Priority: mailto: links
     for tag in soup.find_all('a', href=True):
         href = tag['href']
         if href.startswith('mailto:'):
             email = href[7:].split('?')[0].strip().lower()
             if '@' in email and not any(d in email for d in SKIP_EMAIL_DOMAINS):
                 return email
-    # Fallback: regex scan
     for match in EMAIL_RE.findall(html):
         m = match.lower()
         if not any(d in m for d in SKIP_EMAIL_DOMAINS):
@@ -244,11 +180,7 @@ def get_store_info(base_url, session):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
         'Accept': 'text/html,*/*;q=0.8',
     }
-    result = {
-        'store_name': base_url.replace('https://', '').split('.')[0],
-        'email': None,
-        'phone': None,
-    }
+    result = {'store_name': base_url.replace('https://', '').split('.')[0], 'email': None, 'phone': None}
     try:
         r = session.get(base_url, headers=headers, timeout=15)
         html = r.text
@@ -258,9 +190,9 @@ def get_store_info(base_url, session):
             result['store_name'] = title.text.strip()[:80]
         result['email'] = extract_email(html, soup)
         result['phone'] = extract_phone(html)
-        # Try contact/about pages if no email found
+        
         if not result['email']:
-            for path in ['/pages/contact', '/contact', '/pages/about-us']:
+            for path in['/pages/contact', '/contact', '/pages/about-us', '/password']:
                 try:
                     pr = session.get(base_url + path, headers=headers, timeout=8)
                     if pr.status_code == 200:
@@ -273,8 +205,8 @@ def get_store_info(base_url, session):
                             result['phone'] = extract_phone(pr.text)
                 except:
                     continue
-    except Exception as e:
-        log(f"Info extraction error: {e}", "WARN")
+    except Exception:
+        pass
     return result
 
 # ── AI Email generation ───────────────────────────────────────────────────────
@@ -333,13 +265,10 @@ def run_automation():
 def _run():
     global automation_running
 
-    # ── Load config ──────────────────────────────────────────────────────────
     log("📋 Loading config from Google Sheet...", "INFO")
     cfg_resp = call_sheet({'action': 'get_config'})
-
     if cfg_resp.get('error'):
         log(f"❌ Cannot reach Apps Script: {cfg_resp['error']}", "ERROR")
-        log("👉 Make sure APPS_SCRIPT_URL is set in Render → Environment", "ERROR")
         return
 
     cfg = cfg_resp.get('config', {})
@@ -347,45 +276,33 @@ def _run():
     serpapi_key = cfg.get('serpapi_key', '').strip()
     min_leads   = int(cfg.get('min_leads', 50) or 50)
 
-    if not groq_key:
-        log("❌ Groq API Key missing — go to CFG screen → save", "ERROR"); return
-    if not serpapi_key:
-        log("❌ SerpAPI Key missing — go to CFG screen → save", "ERROR"); return
-
-    log(f"✅ Config loaded | Target: {min_leads} leads", "INFO")
-
-    # ── Load keywords ────────────────────────────────────────────────────────
-    kw_resp = call_sheet({'action': 'get_keywords'})
-    ready_kws = [k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
-    if not ready_kws:
-        log("❌ No READY keywords! Add keywords in Leads screen or click Reset Used", "ERROR")
+    if not groq_key or not serpapi_key:
+        log("❌ API Keys missing — check CFG screen", "ERROR")
         return
-    log(f"🗝️  {len(ready_kws)} keywords ready", "INFO")
 
-    # ── Load template ────────────────────────────────────────────────────────
+    kw_resp = call_sheet({'action': 'get_keywords'})
+    ready_kws =[k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
+    if not ready_kws:
+        log("❌ No READY keywords!", "ERROR")
+        return
+
     tpl_resp = call_sheet({'action': 'get_templates'})
-    templates = tpl_resp.get('templates', [])
+    templates = tpl_resp.get('templates',[])
     if not templates:
-        log("❌ No email template! Add one in Email screen first", "ERROR")
+        log("❌ No email template!", "ERROR")
         return
     tpl = templates[0]
-    log(f"📧 Template loaded: '{tpl['name']}'", "INFO")
 
-    # ── Phase 1: Lead collection ─────────────────────────────────────────────
     session = requests.Session()
     session.max_redirects = 3
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — FINDING NO-PAYMENT STORES", "SUCCESS")
-    log(f"🎯 Target: {min_leads} leads from {len(ready_kws)} keywords", "INFO")
+    log("🚀 PHASE 1 — FINDING FRESH NO-PAYMENT STORES", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     for kw_row in ready_kws:
-        if not automation_running:
-            break
-        if total_leads >= min_leads:
-            log(f"🎯 Target reached! ({total_leads}/{min_leads})", "SUCCESS")
+        if not automation_running or total_leads >= min_leads:
             break
 
         keyword = kw_row.get('keyword', '')
@@ -393,50 +310,46 @@ def _run():
         kw_id   = kw_row.get('id', '')
         kw_leads = 0
 
-        log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
+        log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}] (Past 7 Days filter)", "INFO")
 
-        # Search for stores
         try:
             store_urls = find_shopify_stores(keyword, country, serpapi_key)
         except Exception as e:
             log(f"Search failed: {e}", "WARN")
-            store_urls = []
+            store_urls =[]
 
         if not store_urls:
-            log("⚠️  No myshopify.com URLs found for this keyword", "WARN")
+            log("⚠️  No NEW stores found in the past 7 days for this keyword. Trying next...", "WARN")
             call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
             continue
 
-        log(f"🔍 Checking {len(store_urls)} stores for payment gateways...", "INFO")
+        log(f"🔍 Checking {len(store_urls)} fresh stores...", "INFO")
 
         for url in store_urls:
-            if not automation_running:
-                break
-            if total_leads >= min_leads:
+            if not automation_running or total_leads >= min_leads:
                 break
 
             try:
                 log(f"   🌐 {url}", "INFO")
+                target_info = check_store_target(url, session)
 
-                # Step 1: Verify it's a live Shopify store
-                if not is_shopify(url, session):
+                if not target_info.get("is_shopify"):
                     log(f"   ❌ Not a live Shopify store — skip", "INFO")
                     time.sleep(0.5)
                     continue
 
-                # Step 2: Check if payment gateway exists
-                if has_payment_gateway(url, session):
-                    log(f"   💳 Has payment → skip", "INFO")
+                if not target_info.get("is_lead"):
+                    reason = target_info.get("reason", "Already has payment gateway")
+                    log(f"   💳 {reason} → skip", "INFO")
                     time.sleep(0.5)
                     continue
 
-                # ✅ NO payment found!
-                log(f"   🎯 NO PAYMENT GATEWAY — collecting info...", "SUCCESS")
+                # ✅ NEW & NO payment found!
+                reason = target_info.get("reason")
+                log(f"   🎯 TARGET MATCH: {reason} — collecting info...", "SUCCESS")
 
-                # Step 3: Extract contact info
                 info = get_store_info(url, session)
 
-                # Step 4: Save to Google Sheet
                 save_resp = call_sheet({
                     'action': 'save_lead',
                     'store_name': info['store_name'],
@@ -461,61 +374,41 @@ def _run():
                 log(f"   ⚠️  Error: {e}", "WARN")
                 continue
 
-        # Mark keyword as used
         call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': kw_leads})
         log(f"✅ '{keyword}' done → {kw_leads} leads found", "SUCCESS")
 
-    # ── Phase 2: Email outreach ───────────────────────────────────────────────
+    # ── Phase 2 ──
     log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log(f"📊 Scraping done! Total leads: {total_leads}", "SUCCESS")
-    log("📧 PHASE 2 — EMAIL OUTREACH STARTING", "INFO")
+    log(f"📊 Scraping done! Total fresh leads: {total_leads}", "SUCCESS")
+    log("📧 PHASE 2 — EMAIL OUTREACH", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     leads_resp = call_sheet({'action': 'get_leads'})
-    all_leads  = leads_resp.get('leads', [])
-    pending    = [l for l in all_leads
+    pending    = [l for l in leads_resp.get('leads', [])
                   if l.get('email') and '@' in l['email'] and l.get('email_sent') != 'sent']
 
-    log(f"📨 {len(pending)} leads with email addresses to contact", "INFO")
-
-    if not pending:
-        log("⚠️  No leads with emails found — check your collected leads", "WARN")
+    log(f"📨 {len(pending)} leads ready to email", "INFO")
 
     for i, lead in enumerate(pending):
         if not automation_running:
-            log("⛔ Stopped during email phase", "WARN")
             break
-
         email_to = lead['email']
         log(f"✉️  [{i+1}/{len(pending)}] Sending to {email_to}...", "INFO")
-
         subject, body = generate_email(tpl['subject'], tpl['body'], lead, groq_key)
-
-        send_resp = call_sheet({
-            'action': 'send_email',
-            'to': email_to,
-            'subject': subject,
-            'body': body,
-            'lead_id': lead.get('id', '')
-        })
-
+        send_resp = call_sheet({'action': 'send_email', 'to': email_to, 'subject': subject, 'body': body, 'lead_id': lead.get('id', '')})
         if send_resp.get('status') == 'ok':
-            log(f"   ✅ Email sent to {email_to}", "SUCCESS")
+            log(f"   ✅ Email sent", "SUCCESS")
         else:
-            log(f"   ❌ Send failed: {send_resp.get('message', send_resp)}", "ERROR")
-
-        delay = random.randint(90, 150)
-        log(f"   ⏳ Waiting {delay}s before next email...", "INFO")
+            log(f"   ❌ Send failed: {send_resp.get('message')}", "ERROR")
+        delay = random.randint(60, 120)
+        log(f"   ⏳ Wait {delay}s...", "INFO")
         time.sleep(delay)
 
-    log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🎉 ALL DONE! Check your Google Sheet for leads.", "SUCCESS")
-    log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
+    log("🎉 ALL DONE!", "SUCCESS")
 
-# ── Flask routes ──────────────────────────────────────────────────────────────
+# Flask Routes
 @app.route('/')
-def index():
-    return render_template('index.html')
+def index(): return render_template('index.html')
 
 @app.route('/api/status')
 def api_status():
@@ -524,23 +417,15 @@ def api_status():
     if script_url:
         try:
             lr = call_sheet({'action': 'get_leads'})
-            leads = lr.get('leads', [])
+            leads = lr.get('leads',[])
             total_leads = len(leads)
             emails_sent = sum(1 for l in leads if l.get('email_sent') == 'sent')
             kr = call_sheet({'action': 'get_keywords'})
-            kws = kr.get('keywords', [])
+            kws = kr.get('keywords',[])
             kw_total = len(kws)
             kw_used  = sum(1 for k in kws if k.get('status') == 'used')
-        except:
-            pass
-    return jsonify({
-        'running': automation_running,
-        'total_leads': total_leads,
-        'emails_sent': emails_sent,
-        'kw_total': kw_total,
-        'kw_used': kw_used,
-        'script_connected': bool(script_url),
-    })
+        except: pass
+    return jsonify({'running': automation_running, 'total_leads': total_leads, 'emails_sent': emails_sent, 'kw_total': kw_total, 'kw_used': kw_used, 'script_connected': bool(script_url)})
 
 @app.route('/api/logs/stream')
 def stream_logs():
@@ -551,22 +436,16 @@ def stream_logs():
                 yield f"data: {msg}\n\n"
             except queue.Empty:
                 yield f"data: {json.dumps({'ping': True})}\n\n"
-    return Response(gen(), mimetype='text/event-stream',
-                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+    return Response(gen(), mimetype='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 @app.route('/api/sheet', methods=['POST'])
 def api_sheet():
-    script_url = os.environ.get('APPS_SCRIPT_URL', '')
-    if not script_url:
-        return jsonify({'error': 'APPS_SCRIPT_URL not set in Render environment'})
-    result = call_sheet(request.json)
-    return jsonify(result)
+    return jsonify(call_sheet(request.json))
 
 @app.route('/api/automation/start', methods=['POST'])
 def api_start():
     global automation_running, automation_thread
-    if automation_running:
-        return jsonify({'status': 'already_running'})
+    if automation_running: return jsonify({'status': 'already_running'})
     automation_thread = threading.Thread(target=run_automation, daemon=True)
     automation_thread.start()
     return jsonify({'status': 'started'})
@@ -577,22 +456,6 @@ def api_stop():
     automation_running = False
     log("⛔ Stopped by user", "WARN")
     return jsonify({'status': 'stopped'})
-
-@app.route('/api/schedule', methods=['POST'])
-def api_schedule():
-    data = request.json
-    run_time_str = data.get('time', '')
-    try:
-        run_time = datetime.fromisoformat(run_time_str)
-        scheduler.add_job(
-            func=lambda: threading.Thread(target=run_automation, daemon=True).start(),
-            trigger='date', run_date=run_time,
-            id='scheduled_run', replace_existing=True
-        )
-        log(f"📅 Scheduled for {run_time_str}", "INFO")
-        return jsonify({'status': 'scheduled', 'time': run_time_str})
-    except Exception as e:
-        return jsonify({'status': 'error', 'msg': str(e)}), 400
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
