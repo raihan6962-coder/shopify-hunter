@@ -73,7 +73,7 @@ def find_new_shopify_stores(keyword, country, serpapi_key):
         time.sleep(0.5)
     log(f"   URLScan: {len(all_urls)} stores", "INFO")
 
-    # SerpAPI — new store signal queries
+    # SerpAPI
     log(f"   [SerpAPI] multi-range search...", "INFO")
     new_store_queries = [
         f'site:myshopify.com "{keyword}" "coming soon"',
@@ -175,203 +175,286 @@ def find_new_shopify_stores(keyword, country, serpapi_key):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHECKOUT TEST
+# PAYMENT DETECTION — 2-step approach
+# Step 1: Check homepage/cart.js for payment SDK (fast)
+# Step 2: If unclear, do full checkout test (slower but accurate)
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Real payment SDK scripts — definitive proof payment IS configured
+PAYMENT_SDK = [
+    'js.stripe.com/v3', 'js.stripe.com/v2',
+    'paypal.com/sdk/js',
+    'cdn.shopify.com/shopifycloud/shop-js',  # Shop Pay
+    'pay.shopify.com',
+    'js.klarna.com',
+    'js.afterpay.com', 'portal.afterpay.com',
+    'cdn1.affirm.com',
+    'checkout.sezzle.com',
+    'js.squareup.com',
+    'js.braintreegateway.com',
+]
+
+# Explicit messages that payment is NOT set up
+NO_PAYMENT_MESSAGES = [
+    "this store isn't accepting payments",
+    "isn't accepting payments",
+    "not accepting payments",
+    "no payment methods are available",
+    "no payment providers",
+    "payment provider hasn't been set up",
+    "this store is not accepting orders",
+]
+
 def check_store_target(base_url, session):
     ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
     headers = {'User-Agent': ua, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9'}
+
     try:
+        # ── Step 1: Homepage quick check ─────────────────────────────────────
         r = session.get(base_url, headers=headers, timeout=10, allow_redirects=True)
         if r.status_code != 200:
             return {"is_shopify": False, "is_lead": False}
-        html = r.text.lower()
-        if 'shopify' not in html and 'cdn.shopify.com' not in html:
+
+        html = r.text
+        html_lower = html.lower()
+
+        # Not Shopify at all — skip fast
+        if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
             return {"is_shopify": False, "is_lead": False}
 
-        is_password = '/password' in r.url or 'password-page' in html or 'opening soon' in html
+        # Payment SDK found on homepage = definitely has payment
+        for sdk in PAYMENT_SDK:
+            if sdk in html:
+                return {"is_shopify": True, "is_lead": False, "reason": f"SDK: {sdk[:30]}"}
 
+        # ── Step 2: cart.js check (fast, no cart manipulation needed) ────────
         try:
-            prod_req = session.get(f"{base_url}/products.json?limit=1", headers=headers, timeout=10)
+            cj = session.get(f"{base_url}/cart.js", headers=headers, timeout=8)
+            if cj.status_code == 200:
+                cart_text = cj.text.lower()
+                # payment_gateway field in cart = has payment
+                if '"payment_gateway"' in cart_text:
+                    # Check if it's empty or has value
+                    m = re.search(r'"payment_gateway"\s*:\s*"([^"]*)"', cart_text)
+                    if m and m.group(1):  # non-empty = has payment
+                        return {"is_shopify": True, "is_lead": False,
+                                "reason": f"cart.js payment_gateway: {m.group(1)[:20]}"}
+        except: pass
+
+        # ── Step 3: Get products for checkout test ────────────────────────────
+        try:
+            prod_req = session.get(f"{base_url}/products.json?limit=1",
+                                   headers=headers, timeout=10)
             if prod_req.status_code != 200:
                 return {"is_shopify": True, "is_lead": False, "reason": "No products.json"}
+
             prod_data = prod_req.json()
+            products = prod_data.get('products', [])
 
-            if not prod_data.get('products'):
-                chk = session.get(f"{base_url}/checkout", headers=headers, timeout=12)
-                chk_html = chk.text.lower()
-                if ("isn't accepting payments" in chk_html or
-                        "not accepting payments" in chk_html or "no payment methods" in chk_html):
-                    return {"is_shopify": True, "is_lead": True, "reason": "0 products + payment disabled"}
-                if is_password:
-                    return {"is_shopify": True, "is_lead": True, "reason": "New store (password, 0 products)"}
-                return {"is_shopify": True, "is_lead": False, "reason": "0 products, unclear"}
+            # ── Step 4a: 0 products — check checkout directly ─────────────────
+            if not products:
+                chk = session.get(f"{base_url}/checkout", headers=headers,
+                                  timeout=12, allow_redirects=True)
+                chk_lower = chk.text.lower()
+                for msg in NO_PAYMENT_MESSAGES:
+                    if msg in chk_lower:
+                        return {"is_shopify": True, "is_lead": True,
+                                "reason": "0 products + no payment message"}
+                # Password page with 0 products = brand new store
+                if '/password' in r.url or 'password-page' in html_lower:
+                    return {"is_shopify": True, "is_lead": True,
+                            "reason": "Password protected + 0 products (brand new)"}
+                return {"is_shopify": True, "is_lead": False, "reason": "0 products, no clear signal"}
 
-            variant_id = prod_data['products'][0]['variants'][0]['id']
+            # ── Step 4b: Add to cart → checkout ──────────────────────────────
+            variant_id = products[0]['variants'][0]['id']
+
+            # Add to cart
             session.post(f"{base_url}/cart/add.js",
                 json={"id": variant_id, "quantity": 1},
-                headers={**headers, 'Content-Type': 'application/json'}, timeout=10)
+                headers={**headers, 'Content-Type': 'application/json'},
+                timeout=10)
 
-            chk_req = session.get(f"{base_url}/checkout", headers=headers, timeout=15, allow_redirects=True)
-            chk_html = chk_req.text.lower()
+            # Go to checkout
+            chk_req = session.get(f"{base_url}/checkout", headers=headers,
+                                   timeout=15, allow_redirects=True)
+            chk_html = chk_req.text
+            chk_lower = chk_html.lower()
 
-            payment_keywords = ['visa', 'mastercard', 'amex', 'paypal', 'credit card',
-                'debit card', 'card number', 'stripe', 'klarna', 'afterpay',
-                'shop pay', 'apple pay', 'google pay', 'card-number',
-                'payment-method', 'pay now', 'complete order', 'place order']
-            for pk in payment_keywords:
-                if pk in chk_html:
-                    return {"is_shopify": True, "is_lead": False, "reason": f"Has payment ('{pk}')"}
+            # Check for payment SDK in checkout page too
+            for sdk in PAYMENT_SDK:
+                if sdk in chk_html:
+                    return {"is_shopify": True, "is_lead": False,
+                            "reason": f"Checkout SDK: {sdk[:30]}"}
 
-            if ("isn't accepting payments" in chk_html or
-                    "not accepting payments" in chk_html or "no payment methods" in chk_html):
-                return {"is_shopify": True, "is_lead": True, "reason": "Checkout explicitly disabled"}
+            # Explicit no-payment message = CONFIRMED LEAD
+            for msg in NO_PAYMENT_MESSAGES:
+                if msg in chk_lower:
+                    return {"is_shopify": True, "is_lead": True,
+                            "reason": f"No payment: '{msg[:40]}'"}
 
-            if 'checkout' in chk_html or 'contact information' in chk_html:
-                return {"is_shopify": True, "is_lead": True, "reason": "Checkout reachable, no payment found"}
+            # Payment form elements = has payment
+            payment_form_signals = [
+                'card-number', 'cardnumber', 'card_number',
+                'data-card-fields', 'braintree-hosted-field',
+                'stripe-card', 'id="card-', 'name="card_',
+                '"payment_method_type"', 'payment-form',
+            ]
+            for sig in payment_form_signals:
+                if sig in chk_lower:
+                    return {"is_shopify": True, "is_lead": False,
+                            "reason": f"Payment form: {sig}"}
 
-            return {"is_shopify": True, "is_lead": False, "reason": "Inconclusive"}
+            # Visible payment method names in checkout
+            checkout_payment_words = [
+                'visa', 'mastercard', 'american express', 'paypal',
+                'shop pay', 'apple pay', 'google pay', 'klarna',
+                'afterpay', 'affirm', 'pay with card',
+            ]
+            for word in checkout_payment_words:
+                if word in chk_lower:
+                    return {"is_shopify": True, "is_lead": False,
+                            "reason": f"Payment word: {word}"}
+
+            # If we reached checkout page but found NONE of the above = no payment
+            # Verify we actually reached a real checkout (not redirected away)
+            checkout_page_signals = [
+                'contact information', 'email or mobile',
+                'shipping address', 'order summary',
+                'express checkout',
+            ]
+            reached_checkout = any(sig in chk_lower for sig in checkout_page_signals)
+
+            if reached_checkout:
+                return {"is_shopify": True, "is_lead": True,
+                        "reason": "Checkout reached, no payment options found"}
+
+            return {"is_shopify": True, "is_lead": False, "reason": "Could not confirm checkout"}
+
         except Exception as e:
-            return {"is_shopify": True, "is_lead": False, "reason": f"Error: {e}"}
+            return {"is_shopify": True, "is_lead": False, "reason": f"Checkout error: {e}"}
+
     except Exception:
         return {"is_shopify": False, "is_lead": False}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EMAIL EXTRACTION — IMPROVED (checks 10+ pages)
+# EMAIL + PHONE EXTRACTION — checks 9 pages + JSON-LD
 # ─────────────────────────────────────────────────────────────────────────────
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 SKIP_EMAIL = ['example.com', 'sentry.io', 'wixpress.com', 'shopify.com',
-              'noreply', 'no-reply', 'donotreply', '@2x.', '.png', '.jpg', '.svg']
-PHONE_RE = re.compile(r'(\+\d{1,3}[\s\-\.]?\(?\d{1,4}\)?[\s\-\.]?\d{3,5}[\s\-\.]?\d{3,5})')
+              'noreply', 'no-reply', 'donotreply', '@2x.', '.png', '.jpg', '.svg',
+              'schema.org', 'w3.org', 'domain.com']
+PHONE_PATTERNS = [
+    re.compile(r'\+\d{1,3}[\s\-\.]?\(?\d{1,4}\)?[\s\-\.]?\d{3,5}[\s\-\.]?\d{3,5}'),
+    re.compile(r'\(\d{3}\)\s*\d{3}[\s\-\.]\d{4}'),
+    re.compile(r'\b\d{3}[\s\-\.]\d{3}[\s\-\.]\d{4}\b'),
+]
 
 def is_valid_email(email):
-    e = email.lower()
+    e = email.lower().strip()
     if any(s in e for s in SKIP_EMAIL):
         return False
-    # Must have valid domain with TLD
     parts = e.split('@')
-    if len(parts) != 2:
+    if len(parts) != 2 or not parts[0] or not parts[1]:
         return False
-    domain = parts[1]
-    if '.' not in domain:
+    if '.' not in parts[1]:
         return False
-    tld = domain.split('.')[-1]
-    if len(tld) < 2 or len(tld) > 6:
-        return False
-    return True
+    tld = parts[1].split('.')[-1]
+    return 2 <= len(tld) <= 6
 
 def extract_email_from_html(html, soup):
-    """Extract email — checks mailto links first, then regex."""
-    # Priority 1: mailto: links
+    # Priority 1: mailto links
     for tag in soup.find_all('a', href=True):
         href = tag.get('href', '')
         if href.startswith('mailto:'):
             e = href[7:].split('?')[0].strip().lower()
             if is_valid_email(e):
                 return e
-    # Priority 2: regex scan
+    # Priority 2: visible text that looks like email
     for match in EMAIL_RE.findall(html):
-        e = match.lower()
-        if is_valid_email(e):
-            return e
+        if is_valid_email(match):
+            return match.lower()
     return None
 
 def extract_phone_from_html(html):
-    # Try multiple phone patterns
-    patterns = [
-        r'\+\d{1,3}[\s\-\.]?\(?\d{1,4}\)?[\s\-\.]?\d{3,5}[\s\-\.]?\d{3,5}',
-        r'\(\d{3}\)\s*\d{3}[\s\-]\d{4}',
-        r'\d{3}[\s\-\.]\d{3}[\s\-\.]\d{4}',
-    ]
-    for pat in patterns:
-        m = re.search(pat, html)
+    for pattern in PHONE_PATTERNS:
+        m = pattern.search(html)
         if m:
             return m.group(0).strip()
     return None
 
 def get_store_info(base_url, session):
-    """
-    Extract store name, email, phone.
-    Checks: homepage, /pages/contact, /contact, /pages/about-us,
-            /pages/about, /pages/contact-us, footer, /pages/faq
-    """
     ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0'
     headers = {'User-Agent': ua, 'Accept': 'text/html,*/*;q=0.8'}
-    
     result = {
         'store_name': base_url.replace('https://', '').split('.')[0],
-        'email': None,
-        'phone': None,
+        'email': None, 'phone': None,
     }
 
-    # Pages to check for contact info
-    pages_to_check = [
-        '',  # homepage
-        '/pages/contact',
-        '/pages/contact-us',
-        '/contact',
-        '/pages/about-us',
-        '/pages/about',
-        '/pages/faq',
-        '/pages/help',
-        '/pages/support',
+    pages = [
+        '', '/pages/contact', '/pages/contact-us', '/contact',
+        '/pages/about-us', '/pages/about', '/pages/faq',
+        '/pages/help', '/pages/support',
     ]
 
-    for path in pages_to_check:
-        # Stop if we have both email and phone
+    for path in pages:
         if result['email'] and result['phone']:
             break
         try:
-            url = base_url + path
-            r = session.get(url, headers=headers, timeout=10)
-            if r.status_code not in [200, 301, 302]:
+            r = session.get(base_url + path, headers=headers, timeout=10)
+            if r.status_code not in [200]:
                 continue
-
             html = r.text
             soup = BeautifulSoup(html, 'html.parser')
 
-            # Get store name from homepage title
+            # Store name from homepage
             if path == '':
                 title = soup.find('title')
                 if title and title.text.strip():
                     name = title.text.strip()
-                    # Remove common suffixes
-                    for suffix in [' – Shopify', ' | Shopify', ' - Powered by Shopify']:
-                        name = name.replace(suffix, '')
-                    result['store_name'] = name[:80]
+                    for sfx in [' – Shopify', ' | Shopify', ' - Powered by Shopify',
+                                 ' – Online Store', ' | Online Store']:
+                        name = name.replace(sfx, '')
+                    result['store_name'] = name.strip()[:80]
 
-            # Extract email
             if not result['email']:
-                found_email = extract_email_from_html(html, soup)
-                if found_email:
-                    result['email'] = found_email
-                    log(f"   📧 Email found on {path or 'homepage'}: {found_email}", "INFO")
+                e = extract_email_from_html(html, soup)
+                if e:
+                    result['email'] = e
+                    log(f"   📧 Email on '{path or '/'}': {e}", "INFO")
 
-            # Extract phone
             if not result['phone']:
-                found_phone = extract_phone_from_html(html)
-                if found_phone:
-                    result['phone'] = found_phone
+                p = extract_phone_from_html(html)
+                if p:
+                    result['phone'] = p
 
         except Exception:
             continue
 
-    # If still no email, try to find it in JSON-LD structured data
+    # JSON-LD structured data (often has email not visible on page)
     if not result['email']:
         try:
             r = session.get(base_url, headers=headers, timeout=10)
             soup = BeautifulSoup(r.text, 'html.parser')
             for script in soup.find_all('script', type='application/ld+json'):
                 try:
-                    data = json.loads(script.string)
-                    # Handle both dict and list
+                    data = json.loads(script.string or '{}')
                     items = data if isinstance(data, list) else [data]
                     for item in items:
-                        email = item.get('email') or item.get('contactPoint', {}).get('email', '')
-                        if email and is_valid_email(email):
-                            result['email'] = email.lower()
-                            log(f"   📧 Email from JSON-LD: {email}", "INFO")
+                        # Direct email field
+                        e = item.get('email', '')
+                        if e and is_valid_email(e):
+                            result['email'] = e.lower()
+                            log(f"   📧 Email from JSON-LD: {e}", "INFO")
                             break
+                        # contactPoint
+                        cp = item.get('contactPoint', {})
+                        if isinstance(cp, dict):
+                            e = cp.get('email', '')
+                            if e and is_valid_email(e):
+                                result['email'] = e.lower()
+                                break
                 except: continue
         except: pass
 
@@ -419,7 +502,7 @@ def run_automation():
 def _run():
     global automation_running
 
-    log("📋 Loading config from Google Sheet...", "INFO")
+    log("📋 Loading config...", "INFO")
     cfg_resp = call_sheet({'action': 'get_config'})
     if cfg_resp.get('error'):
         log(f"❌ Apps Script error: {cfg_resp['error']}", "ERROR")
@@ -435,8 +518,7 @@ def _run():
         log("❌ Groq API Key missing", "ERROR"); return
     if not serpapi_key:
         log("❌ SerpAPI Key missing", "ERROR"); return
-
-    log(f"✅ Config loaded | Target: {min_leads} leads", "INFO")
+    log(f"✅ Config OK | Target: {min_leads} leads", "INFO")
 
     kw_resp   = call_sheet({'action': 'get_keywords'})
     ready_kws = [k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
@@ -496,7 +578,7 @@ def _run():
 
                 if not result.get("is_lead"):
                     reason = result.get('reason', '')
-                    if 'payment' in reason.lower():
+                    if any(w in reason.lower() for w in ['sdk', 'payment', 'visa', 'stripe', 'paypal', 'cart.js']):
                         rej_payment += 1
                     else:
                         rej_other += 1
@@ -505,7 +587,7 @@ def _run():
                     time.sleep(0.5)
                     continue
 
-                # ✅ LEAD!
+                # ✅ QUALIFIED LEAD
                 log(f"   🎯 MATCH: {result.get('reason')}", "SUCCESS")
                 info = get_store_info(url, session)
 
@@ -524,16 +606,16 @@ def _run():
 
                 total_leads += 1
                 kw_leads += 1
-                log(f"   ✅ LEAD #{total_leads} — {info['store_name']} | "
-                    f"{'📧 ' + info['email'] if info['email'] else '⚠ no email'} | "
-                    f"{'📞 ' + info['phone'] if info['phone'] else 'no phone'}", "SUCCESS")
+                email_str = f"📧 {info['email']}" if info['email'] else "⚠ no email"
+                phone_str = f"📞 {info['phone']}" if info['phone'] else ""
+                log(f"   ✅ LEAD #{total_leads} — {info['store_name']} | {email_str} {phone_str}", "SUCCESS")
                 time.sleep(random.uniform(1.5, 3))
 
             except Exception as e:
                 log(f"   Error: {e}", "WARN"); continue
 
         call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': kw_leads})
-        log(f"\n✅ '{keyword}' done — leads:{kw_leads} paid:{rej_payment} other:{rej_other}", "SUCCESS")
+        log(f"\n✅ '{keyword}' — leads:{kw_leads} paid:{rej_payment} other:{rej_other}", "SUCCESS")
 
     log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
     log(f"📊 Done! Total leads: {total_leads}", "SUCCESS")
