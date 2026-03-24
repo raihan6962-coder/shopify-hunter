@@ -48,158 +48,85 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: MASSIVE DISCOVERY (crt.sh SSL + CommonCrawl + URLScan + Bing)
+# PHASE 1: MASSIVE DISCOVERY (NEW STORES ONLY - LAST 7 DAYS)
 # ─────────────────────────────────────────────────────────────────────────────
-def source_crtsh(keyword):
+
+def source_crtsh():
+    """
+    crt.sh থেকে একদম নতুন তৈরি হওয়া (Brand New) ৩০০০-৫০০০ স্টোর কালেক্ট করবে।
+    টাইমআউট এড়ানোর জন্য deduplicate বাদ দেওয়া হয়েছে।
+    """
     urls = set()
-    log(f"   [crt.sh] SSL cert logs for '{keyword}'...", "INFO")
+    log(f"   [crt.sh] Fetching massive list of BRAND NEW stores (Last 7 Days)...", "INFO")
     try:
-        r = requests.get(
-            "https://crt.sh/",
-            params={'q': f'%.myshopify.com', 'output': 'json'},
-            timeout=30,
-            headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
-        )
+        r = requests.get("https://crt.sh/?q=%.myshopify.com&output=json", timeout=45)
         if r.status_code == 200:
             certs = r.json()
-            log(f"   crt.sh: {len(certs)} total myshopify certs found", "INFO")
-            kw_lower = keyword.lower().replace(' ', '')
-            kw_parts = keyword.lower().split()
-            for cert in certs:
-                name = cert.get('common_name', '') or cert.get('name_value', '')
-                name_lower = name.lower()
-                matches = (kw_lower in name_lower or
-                          all(part in name_lower for part in kw_parts) or
-                          any(part in name_lower for part in kw_parts if len(part) > 4))
-                if matches:
-                    m = MYSHOPIFY_RE.search(name)
-                    if m:
-                        urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception as e:
-        log(f"   crt.sh error: {e}", "WARN")
-
-    try:
-        r2 = requests.get(
-            "https://crt.sh/",
-            params={'q': '%.myshopify.com', 'output': 'json', 'deduplicate': 'Y'},
-            timeout=30,
-            headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
-        )
-        if r2.status_code == 200:
-            all_certs = r2.json()
-            recent = sorted(all_certs,
-                           key=lambda x: x.get('not_before', ''),
-                           reverse=True)[:2000]
+            # Sort by ID descending (newest first) and take top 4000
+            recent = sorted(certs, key=lambda x: x.get('id', 0), reverse=True)[:4000]
             for cert in recent:
                 name = cert.get('common_name', '') or cert.get('name_value', '')
                 m = MYSHOPIFY_RE.search(name)
-                if m:
-                    urls.add(f"https://{m.group(1)}.myshopify.com")
+                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
     except Exception as e:
-        log(f"   crt.sh broad error: {e}", "WARN")
-
-    log(f"   crt.sh: {len(urls)} stores", "INFO")
+        log(f"   crt.sh error: {e}", "WARN")
+    
+    log(f"   crt.sh: {len(urls)} new stores collected", "INFO")
     return urls
 
-def source_commoncrawl(keyword):
+def source_search_recent(keyword):
+    """
+    DuckDuckGo ব্যবহার করে গত ১ সপ্তাহে (df=w) ইনডেক্স হওয়া নির্দিষ্ট নিশের স্টোর খুঁজবে।
+    """
     urls = set()
-    log(f"   [CommonCrawl] '{keyword}'...", "INFO")
-    indexes = ['CC-MAIN-2025-08', 'CC-MAIN-2024-51', 'CC-MAIN-2024-46']
-    for idx in indexes:
-        if len(urls) >= 300: break
-        for kv in [keyword.replace(' ', '-'), keyword.replace(' ', ''), keyword]:
-            try:
-                r = requests.get(
-                    f"https://index.commoncrawl.org/{idx}-index",
-                    params={'url': f'*.myshopify.com/*{kv}*',
-                            'output': 'json', 'limit': 500, 'fl': 'url'},
-                    timeout=20)
-                if r.status_code == 200 and r.text.strip():
-                    for line in r.text.strip().split('\n'):
-                        try:
-                            m = MYSHOPIFY_RE.search(json.loads(line).get('url', ''))
-                            if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-                        except: continue
-            except Exception: pass
-            time.sleep(0.5)
-    log(f"   CommonCrawl: {len(urls)} stores", "INFO")
+    log(f"   [Search] Finding niche '{keyword}' stores indexed in the last 7 days...", "INFO")
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        # df=w means past week filter
+        data = f'q=site:myshopify.com "{keyword}"&df=w'
+        r = requests.post("https://lite.duckduckgo.com/lite/", headers=headers, data=data, timeout=15)
+        for m in MYSHOPIFY_RE.findall(r.text):
+            urls.add(f"https://{m}.myshopify.com")
+    except: pass
+    log(f"   Search: {len(urls)} recent niche stores", "INFO")
     return urls
 
-def source_urlscan(keyword):
+def source_urlscan_recent(keyword):
+    """
+    URLScan থেকে গত ৭ দিনে স্ক্যান হওয়া নির্দিষ্ট নিশের স্টোর খুঁজবে।
+    """
     urls = set()
-    log(f"   [URLScan] '{keyword}'...", "INFO")
-    for q in [
-        f"domain:myshopify.com AND page.title:{keyword.replace(' ', '+')}",
-        f"domain:myshopify.com AND page.body:{keyword.replace(' ', '+')}",
-        f"domain:myshopify.com AND page.domain:*{keyword.replace(' ', '-')}*",
-    ]:
-        try:
-            r = requests.get("https://urlscan.io/api/v1/search/",
-                params={'q': q, 'size': 100, 'sort': 'time'},
-                timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
-            if r.status_code == 200:
-                for result in r.json().get('results', []):
-                    page_url = result.get('page', {}).get('url', '')
-                    m = MYSHOPIFY_RE.search(page_url)
-                    if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-        except Exception: pass
-        time.sleep(0.5)
+    log(f"   [URLScan] Finding recent scans (Last 7 Days) for '{keyword}'...", "INFO")
+    try:
+        query = f'domain:myshopify.com AND date:>now-7d AND "{keyword}"'
+        r = requests.get(f"https://urlscan.io/api/v1/search/?q={query}&size=100&sort=time", timeout=15)
+        if r.status_code == 200:
+            for res in r.json().get('results', []):
+                m = MYSHOPIFY_RE.search(res.get('page', {}).get('url', ''))
+                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+    except: pass
     log(f"   URLScan: {len(urls)} stores", "INFO")
-    return urls
-
-def source_bing(keyword, country):
-    urls = set()
-    log(f"   [Bing] '{keyword}'...", "INFO")
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-    }
-    queries = [
-        f'site:myshopify.com "{keyword}" "coming soon"',
-        f'site:myshopify.com "{keyword}" "opening soon"',
-        f'site:myshopify.com "{keyword}" "welcome to our store"',
-        f'site:myshopify.com "{keyword}" "be the first to know"',
-        f'site:myshopify.com "{keyword}"',
-        f'site:myshopify.com {keyword} shop',
-    ]
-    session = requests.Session()
-    for q in queries:
-        if len(urls) >= 150: break
-        for first in [1, 11, 21]:
-            try:
-                r = session.get('https://www.bing.com/search',
-                    params={'q': q, 'first': first, 'count': 10},
-                    headers=headers, timeout=15)
-                if r.status_code == 200:
-                    for m in MYSHOPIFY_RE.finditer(r.text):
-                        urls.add(f"https://{m.group(1)}.myshopify.com")
-                elif r.status_code == 429:
-                    time.sleep(20); break
-            except Exception: pass
-            time.sleep(random.uniform(2, 4))
-        time.sleep(1)
-    log(f"   Bing: {len(urls)} stores", "INFO")
     return urls
 
 def find_shopify_stores(keyword, country):
     all_urls = set()
-    all_urls.update(source_crtsh(keyword))
-    log(f"   After crt.sh: {len(all_urls)} total", "INFO")
-    all_urls.update(source_commoncrawl(keyword))
-    log(f"   After CommonCrawl: {len(all_urls)} total", "INFO")
-    all_urls.update(source_urlscan(keyword))
-    all_urls.update(source_bing(keyword, country))
+    
+    # ১. গত ৭ দিনের সার্চ ইঞ্জিন ডাটা
+    all_urls.update(source_search_recent(keyword))
+    # ২. গত ৭ দিনের স্ক্যান ডাটা
+    all_urls.update(source_urlscan_recent(keyword))
+    # ৩. একদম নতুন তৈরি হওয়া হাজার হাজার স্টোর (crt.sh)
+    all_urls.update(source_crtsh())
 
     total = list(all_urls)
     random.shuffle(total)
-    log(f"📦 Total: {len(total)} unique stores to test", "SUCCESS")
+    log(f"📦 Total: {len(total)} NEW stores. Filtering by niche '{keyword}' & checking checkout...", "SUCCESS")
     return total
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 2: CHECKOUT HTML ANALYSIS
+# PHASE 2: NICHE FILTER & CHECKOUT HTML ANALYSIS
 # ─────────────────────────────────────────────────────────────────────────────
-def check_store_target(base_url, session):
+def check_store_target(base_url, session, keyword):
     ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
     headers = {'User-Agent': ua, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9'}
     try:
@@ -209,6 +136,11 @@ def check_store_target(base_url, session):
         html_lower = r.text.lower()
         if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
             return {"is_shopify": False, "is_lead": False}
+
+        # 🚨 NICHE CHECK: হোমপেজে কিওয়ার্ড না থাকলে স্কিপ করবে (যেহেতু crt.sh থেকে সব নিশের স্টোর আসছে)
+        kw_lower = keyword.lower().strip()
+        if kw_lower and kw_lower not in html_lower:
+            return {"is_shopify": True, "is_lead": False, "reason": "Keyword missing"}
 
         is_password = '/password' in r.url or 'password-page' in html_lower
 
@@ -423,7 +355,7 @@ def _run():
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
     log("🚀 PHASE 1 — HUNTING NEW NO-PAYMENT STORES", "SUCCESS")
-    log(f"🎯 Target: {min_leads} leads | Sources: crt.sh + CommonCrawl + URLScan + Bing", "INFO")
+    log(f"🎯 Target: {min_leads} leads | Filtering strictly by Niche", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     for kw_row in ready_kws:
@@ -448,30 +380,30 @@ def _run():
             call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
             continue
 
-        log(f"🔍 Checking {len(store_urls)} stores for payment gateways...", "INFO")
-
         for idx, url in enumerate(store_urls):
             if not automation_running: break
             if total_leads >= min_leads: break
 
             try:
-                # এখানে আপনার দেওয়া কোডের check_store_target ব্যবহার করা হয়েছে
-                result = check_store_target(url, session)
+                # এখানে কিওয়ার্ড পাস করা হয়েছে যাতে হোমপেজে কিওয়ার্ড না থাকলে স্কিপ করে
+                result = check_store_target(url, session, keyword)
                 if not result.get("is_shopify"): continue
 
                 if not result.get("is_lead"):
                     reason = result.get('reason', '')
+                    
+                    # যদি কিওয়ার্ড না থাকে, তাহলে টার্মিনালে স্প্যাম করবে না (যাতে লগ ক্লিন থাকে)
+                    if "Keyword missing" in reason:
+                        continue
+
                     if any(w in reason.lower() for w in ['has:', 'payment', 'visa', 'stripe']):
                         rej_pay += 1
                     else:
                         rej_other += 1
                         
-                    # 4999 স্টোরের ক্ষেত্রে লগ স্প্যাম এড়াতে প্রথম ৫টি এবং এরপর প্রতি ১০টি পর পর লগ দেখাবে
-                    if idx < 5:
-                        log(f"   [{idx+1}] SKIP ({reason}) — {url}", "WARN")
-                    elif (idx + 1) % 10 == 0:
-                        log(f"   Progress: [{idx+1}/{len(store_urls)}] leads:{kw_leads} paid:{rej_pay} other:{rej_other}", "INFO")
-                    time.sleep(0.5)
+                    # লগ স্প্যাম এড়াতে প্রতি ২০টি পর পর লগ দেখাবে
+                    if (rej_pay + rej_other) % 20 == 0:
+                        log(f"   Progress: Checked {rej_pay + rej_other} niche stores | Leads: {kw_leads} | Paid: {rej_pay}", "INFO")
                     continue
 
                 # ✅ LEAD FOUND!
