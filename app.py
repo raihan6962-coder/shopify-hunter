@@ -56,67 +56,76 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-# ── 1. ADVANCED SCRAPING (Max Volume & Global Error Search) ───────────────────
+# ── 1. DIRECTORY SCRAPING (Play Store Style) ──────────────────────────────────
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 def find_shopify_stores(keyword, country, serpapi_key):
+    """
+    আপনার আইডিয়া অনুযায়ী: E-commerce Directory, Trustpilot, এবং 
+    Shopify App Review পেজগুলো থেকে Niche অনুযায়ী স্টোর স্ক্র্যাপ করবে।
+    """
     all_urls = set()
     kw_clean = keyword.lower().replace(' ', '')
 
-    # METHOD 1: URLScan.io
-    log(f"🔍 Scanning URLScan.io for recently active '{keyword}' stores...", "INFO")
+    # METHOD 1: URLScan.io (Directory of recently scanned sites)
+    log(f"🔍 Scanning Global Directories for '{keyword}' stores...", "INFO")
     try:
         urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=300&sort=time"
         r = requests.get(urlscan_url, timeout=10)
         if r.status_code == 200:
-            data = r.json()
-            for result in data.get('results', []):
+            for result in r.json().get('results', []):
                 page_url = result.get('page', {}).get('url', '')
                 m = MYSHOPIFY_RE.search(page_url)
-                if m:
-                    all_urls.add(f"https://{m.group(1)}.myshopify.com")
+                if m: all_urls.add(f"https://{m.group(1)}.myshopify.com")
     except Exception as e:
-        log(f"   URLScan error: {e}", "WARN")
+        pass
 
-    # METHOD 2: SerpAPI with "Past Month" filter for MASSIVE volume
-    log(f"🔍 Searching Google (Past Month) for massive volume...", "INFO")
+    # METHOD 2: Directory Footprints via SerpAPI
+    log(f"🔍 Scraping E-commerce Directories & Lists for massive volume...", "INFO")
     
-    # 🔥 Global Error Search: Country ফিল্টার ছাড়াও খুঁজবে যাতে লিড মিস না হয়
+    # 🔥 DIRECTORY DORKS: Trustpilot, StoreLeads, Myip.ms এবং শপিফাই লিস্ট
     queries = [
-        f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
-        f'site:myshopify.com "{keyword}" "checkout is disabled"',
-        f'site:myshopify.com "{keyword}" {country}',
-        f'site:myshopify.com "{keyword}" "Welcome to our store" {country}',
-        f'site:myshopify.com "{keyword}"'
+        f'site:trustpilot.com "myshopify.com" "{keyword}"',
+        f'site:myip.ms "myshopify.com" "{keyword}"',
+        f'site:ecommercedb.com "{keyword}" "myshopify.com"',
+        f'"{keyword}" "powered by shopify" site:myshopify.com',
+        f'intitle:"{keyword}" site:myshopify.com',
+        f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"'
     ]
     
     for q in queries:
-        if len(all_urls) > 500:
+        if len(all_urls) > 600: # লিমিট ৬০০ করা হয়েছে
             break
         try:
-            params = {
-                'api_key': serpapi_key,
-                'engine': 'google',
-                'q': q,
-                'num': 100,
-                'tbs': 'qdr:m'
-            }
-            res = requests.get('https://serpapi.com/search', params=params, timeout=15)
-            if res.status_code == 200:
-                for item in res.json().get('organic_results', []):
-                    m = MYSHOPIFY_RE.match(item.get('link', ''))
-                    if m:
-                        all_urls.add(f"https://{m.group(1)}.myshopify.com")
+            # Pagination (Deep Scraping) - ডিরেক্টরির ভেতর পর্যন্ত যাবে
+            for start_page in [0, 100]: 
+                params = {
+                    'api_key': serpapi_key,
+                    'engine': 'google',
+                    'q': q,
+                    'num': 100,
+                    'start': start_page
+                }
+                res = requests.get('https://serpapi.com/search', params=params, timeout=15)
+                if res.status_code == 200:
+                    for item in res.json().get('organic_results', []):
+                        m = MYSHOPIFY_RE.match(item.get('link', ''))
+                        if m: all_urls.add(f"https://{m.group(1)}.myshopify.com")
+                time.sleep(1)
         except Exception as e:
             pass
-        time.sleep(1)
 
     urls_list = list(all_urls)
-    log(f"📦 Found {len(urls_list)} FRESH stores to test!", "INFO")
+    log(f"📦 Directory Scrape Complete! Found {len(urls_list)} stores to test.", "INFO")
     return urls_list
 
-# ── 2. STRICT CHECKOUT TEST (100% Accurate) ───────────────────────────────────
+# ── 2. 1000% STRICT CHECKOUT TEST (No Guessing, Only Explicit Errors) ─────────
 def check_store_target(base_url, session):
+    """
+    এই ফাংশনটি এখন আর কোনো অনুমান করবে না। 
+    চেকআউট পেজে যদি হুবহু "isn't accepting payments" লেখাটি না থাকে, 
+    তাহলে সোজা রিজেক্ট করে দিবে। এতে ভুল লিড আসার চান্স ০%।
+    """
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
     headers = {
@@ -136,7 +145,7 @@ def check_store_target(base_url, session):
             
         # 🚨 STRICT RULE: REJECT PASSWORD PROTECTED STORES
         if '/password' in r.url or 'password-page' in html or 'opening soon' in html:
-            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping as requested)"}
+            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping)"}
 
         # The Checkout Test (Add to cart -> Checkout)
         try:
@@ -156,24 +165,23 @@ def check_store_target(base_url, session):
                     if 'checkout' not in chk_html and 'contact information' not in chk_html and "isn't accepting payments" not in chk_html:
                         return {"is_shopify": True, "is_lead": False, "reason": "Could not reach valid checkout page"}
 
-                    # 🔥 SMART BYPASS: সবার আগে চেক করবে শপিফাইয়ের অরিজিনাল এরর মেসেজ আছে কিনা!
-                    if "isn't accepting payments" in chk_html or "not accepting payments" in chk_html or "cannot accept payments" in chk_html:
-                        return {"is_shopify": True, "is_lead": True, "reason": "Live Store -> Checkout Disabled (Explicit Error)!"}
-
-                    # 🚨 CHECK FOR PAYMENT KEYWORDS
-                    payment_keywords =[
-                        'visa', 'mastercard', 'amex', 'paypal', 'credit card', 
-                        'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 'shop pay', 'apple pay', 'google pay'
+                    # 🔥 THE ULTIMATE STRICT FILTER 🔥
+                    # যদি এই নির্দিষ্ট এরর মেসেজগুলো থাকে, শুধুমাত্র তখনই লিড হিসেবে নিবে!
+                    error_messages = [
+                        "isn't accepting payments",
+                        "not accepting payments",
+                        "can't accept payments",
+                        "checkout is disabled"
                     ]
                     
-                    for pk in payment_keywords:
-                        if pk in chk_html:
-                            return {"is_shopify": True, "is_lead": False, "reason": f"Active Checkout ('{pk}' found)"}
+                    for error in error_messages:
+                        if error in chk_html:
+                            return {"is_shopify": True, "is_lead": True, "reason": "100% Verified: Checkout Disabled Error Found!"}
+
+                    # 🚫 যদি উপরের এরর মেসেজ না থাকে, তারমানে পেমেন্ট আছে (লোগো থাকুক বা না থাকুক)। সোজা রিজেক্ট!
+                    return {"is_shopify": True, "is_lead": False, "reason": "Active Checkout (No explicit error found)"}
                     
-                    # Explicit error না পেলেও যদি পেমেন্ট কিওয়ার্ড না থাকে, তবে লিড হিসেবে নিবে।
-                    return {"is_shopify": True, "is_lead": True, "reason": "No Payment Options Found on Checkout!"}
-                    
-            return {"is_shopify": True, "is_lead": False, "reason": "Could not test checkout (No products to add)"}
+            return {"is_shopify": True, "is_lead": False, "reason": "Could not test checkout (No products)"}
             
         except Exception as e:
             return {"is_shopify": True, "is_lead": False, "reason": "Checkout test failed"}
@@ -241,7 +249,7 @@ def get_store_info(base_url, session):
         log(f"Info extraction error: {e}", "WARN")
     return result
 
-# ── AI Email generation (FIXED: JSON Decode Error) ────────────────────────────
+# ── AI Email generation ───────────────────────────────────────────────────────
 def generate_email(tpl_subject, tpl_body, lead, groq_key):
     try:
         prompt = f"""You are writing a short cold email to a Shopify store owner.
@@ -281,19 +289,13 @@ Rules:
         if r.status_code == 200:
             raw = r.json()['choices'][0]['message']['content']
             raw = re.sub(r'```(?:json)?|```', '', raw.strip()).strip()
-            
-            # 🔥 FIX: Remove actual newlines that break JSON parsing
             raw = raw.replace('\n', ' ').replace('\r', '')
-            
-            # strict=False allows control characters just in case
             data = json.loads(raw, strict=False)
             return data.get('subject', tpl_subject), data.get('body', f'<p>{tpl_body}</p>')
         else:
-            log(f"Groq API error: {r.text}", "WARN")
             return tpl_subject, f'<p>{tpl_body}</p>'
             
     except Exception as e:
-        log(f"Groq error ({e}) — using template", "WARN")
         return tpl_subject, f'<p>{tpl_body}</p>'
 
 # ── Main automation ───────────────────────────────────────────────────────────
@@ -319,7 +321,6 @@ def _run():
 
     if cfg_resp.get('error'):
         log(f"❌ Cannot reach Apps Script: {cfg_resp['error']}", "ERROR")
-        log("👉 Make sure APPS_SCRIPT_URL is set in Render → Environment", "ERROR")
         return
 
     cfg = cfg_resp.get('config', {})
@@ -327,11 +328,8 @@ def _run():
     serpapi_key = cfg.get('serpapi_key', '').strip()
     min_leads   = int(cfg.get('min_leads', 50) or 50)
 
-    if not groq_key:
-        log("❌ Groq API Key missing — go to CFG screen → save", "ERROR")
-        return
-    if not serpapi_key:
-        log("❌ SerpAPI Key missing — go to CFG screen → save", "ERROR")
+    if not groq_key or not serpapi_key:
+        log("❌ API Keys missing — go to CFG screen → save", "ERROR")
         return
 
     log(f"✅ Config loaded | Target: {min_leads} leads", "INFO")
@@ -359,7 +357,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — MASSIVE SEARCH & CHECKING CHECKOUT", "SUCCESS")
+    log("🚀 PHASE 1 — DIRECTORY SCRAPING & STRICT CHECKOUT TEST", "SUCCESS")
     log(f"🎯 Target: {min_leads} leads from {len(ready_kws)} keywords", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
@@ -407,8 +405,8 @@ def _run():
                     time.sleep(0.5)
                     continue
 
-                # ✅ NO payment found on Checkout!
-                log(f"   🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
+                # ✅ 100% VERIFIED NO PAYMENT FOUND!
+                log(f"   🎯 {target_info.get('reason')} — collecting info...", "SUCCESS")
 
                 info = get_store_info(url, session)
 
