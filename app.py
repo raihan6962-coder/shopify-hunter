@@ -56,50 +56,46 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-# ── 1. REAL-TIME SSL LOG SCRAPING (100% GOOGLE FREE) ──────────────────────────
+# ── 1. DNS & SECURITY SCRAPING (100% GOOGLE FREE, NO CRT.SH TIMEOUTS) ─────────
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
-def find_shopify_stores(keyword, country, serpapi_key):
+def find_shopify_stores():
     """
-    গুগল সার্চ সম্পূর্ণ বাদ! 
-    সরাসরি CertSpotter, crt.sh এবং URLScan থেকে সদ্য ক্রিয়েট হওয়া স্টোর বের করবে।
+    গুগল এবং crt.sh সম্পূর্ণ বাদ! 
+    AlienVault, Anubis এবং URLScan থেকে হাজার হাজার রিয়েল-টাইম শপিফাই ডোমেইন আনবে।
     """
     all_urls = set()
-    kw_clean = keyword.lower().replace(' ', '')
 
-    log(f"🚀 BYPASSING GOOGLE: Tapping into Real-Time SSL & Security Logs...", "INFO")
+    log(f"🚀 BYPASSING GOOGLE: Tapping into Global DNS & Cyber Security APIs...", "INFO")
 
-    # SOURCE 1: CertSpotter API (Super fast real-time SSL certificates)
-    log(f"🔍 [Source 1] CertSpotter: Fetching newly minted SSL certificates...", "INFO")
+    # SOURCE 1: AlienVault OTX (Passive DNS - Huge database of active domains)
+    log(f"🔍 [Source 1] AlienVault: Fetching passive DNS records...", "INFO")
     try:
-        # Fetching the absolute newest certificates for myshopify.com
-        r = requests.get('https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', timeout=15)
+        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
         if r.status_code == 200:
-            for cert in r.json():
-                for name in cert.get('dns_names', []):
-                    if name.endswith('.myshopify.com') and kw_clean in name:
-                        all_urls.add(f"https://{name}")
+            for entry in r.json().get('passive_dns', []):
+                hostname = entry.get('hostname', '').lower()
+                if hostname.endswith('.myshopify.com') and '*' not in hostname:
+                    all_urls.add(f"https://{hostname}")
     except Exception as e:
-        log(f"   CertSpotter timeout", "WARN")
+        log(f"   AlienVault timeout", "WARN")
 
-    # SOURCE 2: crt.sh (Global Certificate Transparency Database)
-    log(f"🔍 [Source 2] crt.sh: Searching global SSL database for '{kw_clean}'...", "INFO")
+    # SOURCE 2: Anubis (Subdomain enumeration - Extremely fast)
+    log(f"🔍 [Source 2] Anubis: Enumerating myshopify subdomains...", "INFO")
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        r = requests.get(f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", headers=headers, timeout=20)
+        r = requests.get("https://jldc.me/anubis/subdomains/myshopify.com", timeout=15)
         if r.status_code == 200:
-            for entry in r.json():
-                name = entry.get('name_value', '').lower()
-                for domain in name.split('\n'):
-                    if domain.endswith('.myshopify.com') and '*' not in domain:
-                        all_urls.add(f"https://{domain}")
+            for hostname in r.json():
+                hostname = str(hostname).lower()
+                if hostname.endswith('.myshopify.com') and '*' not in hostname:
+                    all_urls.add(f"https://{hostname}")
     except Exception as e:
-        log(f"   crt.sh timeout", "WARN")
+        log(f"   Anubis timeout", "WARN")
 
-    # SOURCE 3: URLScan.io (Stores registered/scanned in the last 30 days)
-    log(f"🔍 [Source 3] URLScan: Finding stores registered recently...", "INFO")
+    # SOURCE 3: URLScan.io (Stores scanned in the last 24-48 hours)
+    log(f"🔍 [Source 3] URLScan: Finding recently scanned stores...", "INFO")
     try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND date:>now-30d AND {kw_clean}&size=200&sort=time"
+        urlscan_url = "https://urlscan.io/api/v1/search/?q=domain:myshopify.com&size=500&sort=time"
         r = requests.get(urlscan_url, timeout=15)
         if r.status_code == 200:
             for result in r.json().get('results', []):
@@ -111,15 +107,18 @@ def find_shopify_stores(keyword, country, serpapi_key):
         log(f"   URLScan timeout", "WARN")
 
     urls_list = list(all_urls)
-    log(f"📦 Found {len(urls_list)} BRAND NEW stores from SSL/Security logs!", "INFO")
+    random.shuffle(urls_list) # শাফেল করে নিচ্ছি যাতে প্রতিবার নতুন স্টোর চেক করে
+    log(f"📦 Found {len(urls_list)} RAW stores from DNS logs! Ready to filter by keyword.", "INFO")
     return urls_list
 
-# ── 2. STRICT CHECKOUT TEST (Only Explicit Errors) ────────────────────────────
-def check_store_target(base_url, session):
+# ── 2. ON-SITE KEYWORD & STRICT CHECKOUT TEST ─────────────────────────────────
+def check_store_target(base_url, session, keyword):
     """
-    ১. Password Page থাকলে সোজা রিজেক্ট করবে।
-    ২. Cart এ প্রোডাক্ট অ্যাড করে Checkout পেজে যাবে।
-    ৩. যদি "isn't accepting payments" লেখা থাকে, শুধু তখনই লিড হিসেবে নিবে!
+    ১. স্টোরের হোমপেজে যাবে।
+    ২. হোমপেজে আপনার কিওয়ার্ড (যেমন: clothing) আছে কিনা চেক করবে। না থাকলে রিজেক্ট!
+    ৩. Password Page থাকলে সোজা রিজেক্ট করবে।
+    ৪. Cart এ প্রোডাক্ট অ্যাড করে Checkout পেজে যাবে।
+    ৫. যদি "isn't accepting payments" লেখা থাকে, শুধু তখনই লিড হিসেবে নিবে!
     """
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
@@ -138,9 +137,14 @@ def check_store_target(base_url, session):
         if 'shopify' not in html and 'cdn.shopify.com' not in html:
             return {"is_shopify": False, "is_lead": False}
             
+        # 🚨 KEYWORD CHECK: ওয়েবসাইটের ভেতরে কিওয়ার্ড আছে কিনা চেক করবে
+        kw_lower = keyword.lower().strip()
+        if kw_lower and kw_lower not in html:
+            return {"is_shopify": True, "is_lead": False, "reason": f"Keyword '{kw_lower}' not found on site"}
+
         # 🚨 STRICT RULE: REJECT PASSWORD PROTECTED STORES
         if '/password' in r.url or 'password-page' in html or 'opening soon' in html:
-            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping as requested)"}
+            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping)"}
 
         # The Checkout Test (Add to cart -> Checkout)
         try:
@@ -351,9 +355,12 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — REAL-TIME SSL SCRAPING & STRICT CHECKOUT TEST", "SUCCESS")
+    log("🚀 PHASE 1 — DNS SCRAPING & ON-SITE KEYWORD CHECK", "SUCCESS")
     log(f"🎯 Target: {min_leads} leads from {len(ready_kws)} keywords", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
+
+    # Get a massive list of raw domains ONCE to save time
+    raw_store_urls = find_shopify_stores()
 
     for kw_row in ready_kws:
         if not automation_running:
@@ -369,34 +376,30 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        try:
-            store_urls = find_shopify_stores(keyword, country, serpapi_key)
-        except Exception as e:
-            log(f"Search failed: {e}", "WARN")
-            store_urls =[]
+        if not raw_store_urls:
+            log("⚠️  No raw URLs found from DNS. API might be blocked.", "WARN")
+            break
 
-        if not store_urls:
-            log("⚠️  No URLs found for this keyword. Moving to next...", "WARN")
-            call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
-            continue
+        log(f"🔍 Filtering {len(raw_store_urls)} stores for keyword '{keyword}' and checking payments...", "INFO")
 
-        log(f"🔍 Checking {len(store_urls)} stores for payment gateways...", "INFO")
-
-        for url in store_urls:
+        for url in raw_store_urls:
             if not automation_running:
                 break
             if total_leads >= min_leads:
                 break
 
             try:
-                target_info = check_store_target(url, session)
+                # Step 1 & 2: Verify Shopify, Check Keyword on site, Check Checkout Page
+                target_info = check_store_target(url, session, keyword)
 
                 if not target_info.get("is_shopify"):
                     continue 
 
                 if not target_info.get("is_lead"):
-                    log(f"   🚫 REJECTED: {target_info.get('reason')} - {url}", "WARN")
-                    time.sleep(0.5)
+                    # Only log if it actually had the keyword but failed checkout test
+                    if "Keyword" not in target_info.get('reason', ''):
+                        log(f"   🚫 REJECTED: {target_info.get('reason')} - {url}", "WARN")
+                    time.sleep(0.2)
                     continue
 
                 # ✅ 100% VERIFIED NO PAYMENT FOUND!
