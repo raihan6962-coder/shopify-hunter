@@ -21,7 +21,7 @@ automation_thread = None
 scheduler = BackgroundScheduler()
 scheduler.start()
 
-# ── Apps Script communication (FIXED: JSON Decode Error) ──────────────────────
+# ── Apps Script communication ─────────────────────────────────────────────────
 def call_sheet(payload):
     script_url = os.environ.get('APPS_SCRIPT_URL', '')
     if not script_url:
@@ -31,7 +31,6 @@ def call_sheet(payload):
         try:
             r = requests.post(script_url, json=payload, timeout=45,
                               headers={'Content-Type': 'application/json'})
-            # JSON Decode Error ঠেকানোর জন্য Try-Except
             try:
                 return r.json()
             except Exception:
@@ -57,13 +56,10 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-# ── 1. ADVANCED SCRAPING (Targeting Broken/New Stores) ────────────────────────
+# ── 1. ADVANCED SCRAPING (Max Volume & Global Error Search) ───────────────────
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 def find_shopify_stores(keyword, country, serpapi_key):
-    """
-    লিডের পরিমাণ বাড়ানোর জন্য লিমিট এবং সার্চ কোয়েরি বাড়ানো হয়েছে।
-    """
     all_urls = set()
     kw_clean = keyword.lower().replace(' ', '')
 
@@ -85,12 +81,12 @@ def find_shopify_stores(keyword, country, serpapi_key):
     # METHOD 2: SerpAPI with "Past Month" filter for MASSIVE volume
     log(f"🔍 Searching Google (Past Month) for massive volume...", "INFO")
     
-    # 🔥 স্পেশাল কোয়েরি: সরাসরি পেমেন্ট ছাড়া স্টোরগুলো খুঁজবে
+    # 🔥 Global Error Search: Country ফিল্টার ছাড়াও খুঁজবে যাতে লিড মিস না হয়
     queries = [
         f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
         f'site:myshopify.com "{keyword}" "checkout is disabled"',
         f'site:myshopify.com "{keyword}" {country}',
-        f'site:myshopify.com "{keyword}" "Welcome to our store"',
+        f'site:myshopify.com "{keyword}" "Welcome to our store" {country}',
         f'site:myshopify.com "{keyword}"'
     ]
     
@@ -119,14 +115,8 @@ def find_shopify_stores(keyword, country, serpapi_key):
     log(f"📦 Found {len(urls_list)} FRESH stores to test!", "INFO")
     return urls_list
 
-# ── 2. STRICT CHECKOUT TEST (FIXED: Smart Bypass for Logos) ───────────────────
+# ── 2. STRICT CHECKOUT TEST (100% Accurate) ───────────────────────────────────
 def check_store_target(base_url, session):
-    """
-    ১. Password Page থাকলে সোজা রিজেক্ট করবে।
-    ২. Cart এ প্রোডাক্ট অ্যাড করে Checkout পেজে যাবে।
-    ৩. সবার আগে চেক করবে "isn't accepting payments" লেখা আছে কিনা। থাকলে ১০০% লিড!
-    ৪. যদি ওই লেখা না থাকে, তখন চেক করবে visa/paypal আছে কিনা। থাকলে রিজেক্ট।
-    """
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
     headers = {
@@ -167,11 +157,10 @@ def check_store_target(base_url, session):
                         return {"is_shopify": True, "is_lead": False, "reason": "Could not reach valid checkout page"}
 
                     # 🔥 SMART BYPASS: সবার আগে চেক করবে শপিফাইয়ের অরিজিনাল এরর মেসেজ আছে কিনা!
-                    # যদি এই মেসেজ থাকে, তাহলে পেজে Visa/Paypal এর লোগো থাকলেও এটা লিড!
                     if "isn't accepting payments" in chk_html or "not accepting payments" in chk_html or "cannot accept payments" in chk_html:
                         return {"is_shopify": True, "is_lead": True, "reason": "Live Store -> Checkout Disabled (Explicit Error)!"}
 
-                    # 🚨 CHECK FOR PAYMENT KEYWORDS (যদি উপরের এরর না থাকে, তবেই এটা চেক করবে)
+                    # 🚨 CHECK FOR PAYMENT KEYWORDS
                     payment_keywords =[
                         'visa', 'mastercard', 'amex', 'paypal', 'credit card', 
                         'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 'shop pay', 'apple pay', 'google pay'
@@ -252,7 +241,7 @@ def get_store_info(base_url, session):
         log(f"Info extraction error: {e}", "WARN")
     return result
 
-# ── AI Email generation (Using Direct REST API) ───────────────────────────────
+# ── AI Email generation (FIXED: JSON Decode Error) ────────────────────────────
 def generate_email(tpl_subject, tpl_body, lead, groq_key):
     try:
         prompt = f"""You are writing a short cold email to a Shopify store owner.
@@ -268,14 +257,13 @@ Body: {tpl_body}
 
 Rules:
 - 80-100 words MAX
-- Zero spam trigger words (FREE, GUARANTEED, ACT NOW, etc.)
-- Mention store name once, naturally
-- Helpful tone, not pushy
+- Zero spam trigger words
+- Mention store name once
 - End with ONE soft question
-- Use HTML <p> tags
+- CRITICAL: Do NOT use newline characters (\\n). Use <br> for line breaks.
+- Respond ONLY with valid JSON.
 
-Respond ONLY with valid JSON, nothing else:
-{{"subject": "...", "body": "<p>...</p><p>...</p>"}}"""
+{{"subject": "...", "body": "..."}}"""
 
         headers = {
             "Authorization": f"Bearer {groq_key}",
@@ -293,7 +281,12 @@ Respond ONLY with valid JSON, nothing else:
         if r.status_code == 200:
             raw = r.json()['choices'][0]['message']['content']
             raw = re.sub(r'```(?:json)?|```', '', raw.strip()).strip()
-            data = json.loads(raw)
+            
+            # 🔥 FIX: Remove actual newlines that break JSON parsing
+            raw = raw.replace('\n', ' ').replace('\r', '')
+            
+            # strict=False allows control characters just in case
+            data = json.loads(raw, strict=False)
             return data.get('subject', tpl_subject), data.get('body', f'<p>{tpl_body}</p>')
         else:
             log(f"Groq API error: {r.text}", "WARN")
@@ -384,7 +377,6 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # Search for stores using URLScan + SerpAPI (Past Month)
         try:
             store_urls = find_shopify_stores(keyword, country, serpapi_key)
         except Exception as e:
@@ -405,11 +397,10 @@ def _run():
                 break
 
             try:
-                # Step 1 & 2: Verify Shopify & Check Checkout Page
                 target_info = check_store_target(url, session)
 
                 if not target_info.get("is_shopify"):
-                    continue # Silent skip for non-shopify
+                    continue 
 
                 if not target_info.get("is_lead"):
                     log(f"   🚫 REJECTED: {target_info.get('reason')} - {url}", "WARN")
@@ -419,10 +410,8 @@ def _run():
                 # ✅ NO payment found on Checkout!
                 log(f"   🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
 
-                # Step 3: Extract contact info
                 info = get_store_info(url, session)
 
-                # Step 4: Save to Google Sheet
                 save_resp = call_sheet({
                     'action': 'save_lead',
                     'store_name': info['store_name'],
@@ -446,7 +435,6 @@ def _run():
             except Exception as e:
                 continue
 
-        # Mark keyword as used
         call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': kw_leads})
         log(f"✅ '{keyword}' done → {kw_leads} leads found", "SUCCESS")
 
