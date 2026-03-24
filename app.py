@@ -11,6 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import logging
 import os
+import urllib.parse
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
@@ -56,82 +57,89 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-# ── 1. ANTI-BLOCK SCRAPER (Bing + CyberSec APIs) ──────────────────────────────
+# ── 1. MULTI-ENGINE SCRAPER (Yahoo, Ask, AOL, URLScan, crt.sh) ────────────────
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 def find_shopify_stores(keyword, country):
     all_urls = set()
     kw_clean = keyword.lower().replace(' ', '')
     
-    log(f"🚀 ANTI-BLOCK MODE: Scraping Bing & CyberSec APIs for '{keyword}'...", "INFO")
+    log(f"🚀 MULTI-ENGINE MODE: Scraping Unblockable Sources for '{keyword}'...", "INFO")
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     }
 
-    # SOURCE 1: Bing Search Scraping (Doesn't block datacenter IPs like Google/DDG)
-    log(f"🔍 [Source 1] Bing Search: Scraping live search results...", "INFO")
     queries = [
         f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
         f'site:myshopify.com "{keyword}" "opening soon"',
-        f'site:myshopify.com "{keyword}" {country}'
+        f'site:myshopify.com "{keyword}" {country}',
+        f'site:myshopify.com intitle:"{keyword}"'
     ]
-    
-    for q in queries:
-        if len(all_urls) > 600:
-            break
-        # Scrape first 5 pages of Bing
-        for first in [1, 11, 21, 31, 41]:
-            try:
-                bing_url = f"https://www.bing.com/search?q={q}&first={first}"
-                r = requests.get(bing_url, headers=headers, timeout=10)
-                if r.status_code == 200:
-                    soup = BeautifulSoup(r.text, 'html.parser')
-                    for a in soup.find_all('a', href=True):
-                        m = MYSHOPIFY_RE.search(a['href'])
-                        if m:
-                            all_urls.add(f"https://{m.group(1)}.myshopify.com")
-            except Exception as e:
-                pass
-            time.sleep(1)
 
-    # SOURCE 2: URLScan.io (Massive Search for new stores)
-    log(f"🔍 [Source 2] URLScan: Fetching recently scanned stores...", "INFO")
+    # SOURCE 1: Yahoo Search (Highly resilient to cloud IPs)
+    log(f"🔍 [Source 1] Yahoo Search: Scraping live results...", "INFO")
+    for q in queries:
+        try:
+            encoded_q = urllib.parse.quote_plus(q)
+            r = requests.get(f"https://search.yahoo.com/search?p={encoded_q}", headers=headers, timeout=10)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for a in soup.find_all('a', href=True):
+                m = MYSHOPIFY_RE.search(a['href'])
+                if m: all_urls.add(f"https://{m.group(1)}.myshopify.com")
+        except Exception: pass
+        time.sleep(1)
+
+    # SOURCE 2: Ask.com (Great for finding hidden stores)
+    log(f"🔍 [Source 2] Ask.com: Scraping alternative index...", "INFO")
+    for q in queries:
+        try:
+            encoded_q = urllib.parse.quote_plus(q)
+            r = requests.get(f"https://www.ask.com/web?q={encoded_q}", headers=headers, timeout=10)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for a in soup.find_all('a', href=True):
+                m = MYSHOPIFY_RE.search(a['href'])
+                if m: all_urls.add(f"https://{m.group(1)}.myshopify.com")
+        except Exception: pass
+        time.sleep(1)
+
+    # SOURCE 3: AOL Search
+    log(f"🔍 [Source 3] AOL Search: Scraping deep web results...", "INFO")
+    for q in queries:
+        try:
+            encoded_q = urllib.parse.quote_plus(q)
+            r = requests.get(f"https://search.aol.com/aol/search?q={encoded_q}", headers=headers, timeout=10)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for a in soup.find_all('a', href=True):
+                m = MYSHOPIFY_RE.search(a['href'])
+                if m: all_urls.add(f"https://{m.group(1)}.myshopify.com")
+        except Exception: pass
+        time.sleep(1)
+
+    # SOURCE 4: URLScan.io (Smart Mode: Fetch 1000 latest, filter in Python)
+    log(f"🔍 [Source 4] URLScan: Fetching recently scanned stores...", "INFO")
     try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=300&sort=time"
+        urlscan_url = "https://urlscan.io/api/v1/search/?q=domain:myshopify.com&size=1000&sort=time"
         r = requests.get(urlscan_url, timeout=15)
         if r.status_code == 200:
             for result in r.json().get('results', []):
                 page_url = result.get('page', {}).get('url', '')
                 m = MYSHOPIFY_RE.search(page_url)
-                if m:
+                # Filter by keyword in Python to avoid API syntax errors
+                if m and kw_clean in m.group(1).lower():
                     all_urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception as e:
-        log(f"   URLScan timeout", "WARN")
+    except Exception: pass
 
-    # SOURCE 3: AlienVault OTX (Passive DNS)
-    log(f"🔍 [Source 3] AlienVault: Fetching passive DNS records...", "INFO")
+    # SOURCE 5: crt.sh (Fixed query for SSL certificates)
+    log(f"🔍 [Source 5] crt.sh: Fetching new SSL certificates...", "INFO")
     try:
-        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
+        r = requests.get(f"https://crt.sh/?q={kw_clean}.myshopify.com&output=json", headers=headers, timeout=15)
         if r.status_code == 200:
-            for entry in r.json().get('passive_dns', []):
-                hostname = entry.get('hostname', '').lower()
-                if hostname.endswith('.myshopify.com') and '*' not in hostname:
-                    all_urls.add(f"https://{hostname}")
-    except Exception as e:
-        pass
-
-    # SOURCE 4: CertSpotter API (Newly minted SSL certificates)
-    log(f"🔍 [Source 4] CertSpotter: Fetching new SSL certificates...", "INFO")
-    try:
-        r = requests.get('https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', timeout=15)
-        if r.status_code == 200:
-            for cert in r.json():
-                for name in cert.get('dns_names', []):
-                    if name.endswith('.myshopify.com'):
-                        all_urls.add(f"https://{name}")
-    except Exception as e:
-        pass
+            for entry in r.json():
+                name = entry.get('name_value', '').lower()
+                if '.myshopify.com' in name and '*' not in name:
+                    all_urls.add(f"https://{name.strip()}")
+    except Exception: pass
 
     urls_list = list(all_urls)
     random.shuffle(urls_list)
@@ -381,7 +389,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — ANTI-BLOCK SCRAPING & HTML CHECKOUT ANALYSIS", "SUCCESS")
+    log("🚀 PHASE 1 — MULTI-ENGINE SCRAPING & HTML CHECKOUT ANALYSIS", "SUCCESS")
     log(f"🎯 Target: {min_leads} leads from {len(ready_kws)} keywords", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
@@ -400,7 +408,7 @@ def _run():
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
         try:
-            # 🔥 USING THE NEW BING + CYBERSEC SCRAPER
+            # 🔥 USING THE NEW MULTI-ENGINE SCRAPER
             store_urls = find_shopify_stores(keyword, country)
         except Exception as e:
             log(f"Search failed: {e}", "WARN")
