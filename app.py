@@ -48,109 +48,188 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: MASSIVE DATABASE SCRAPING (SMART NICHE + FALLBACK)
+# PHASE 1: MASSIVE DISCOVERY (crt.sh SSL + CommonCrawl + URLScan + Bing)
 # ─────────────────────────────────────────────────────────────────────────────
-def scrape_massive_store_list(keyword):
-    """
-    স্মার্ট স্ক্র্যাপিং: প্রথমে কিওয়ার্ড দিয়ে সার্চ করবে। যদি রেজাল্ট কম আসে, 
-    তাহলে রিসেন্ট স্টোর কালেক্ট করে Phase 2 এর উপর ফিল্টারিং এর দায়িত্ব ছেড়ে দেবে।
-    """
+def source_crtsh(keyword):
     urls = set()
-    kw_lower = keyword.lower().strip()
-    log(f"   [Database] Hunting NEW Shopify stores for niche: '{keyword}'...", "INFO")
-
-    # 1. Bing Dorking (Highly effective for niche stores)
+    log(f"   [crt.sh] SSL cert logs for '{keyword}'...", "INFO")
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        for page in range(0, 40, 10):  # First 4 pages
-            r = requests.get(f"https://www.bing.com/search?q=site:myshopify.com+\"{kw_lower}\"&first={page}", headers=headers, timeout=10)
-            for m in MYSHOPIFY_RE.findall(r.text):
-                urls.add(f"https://{m}.myshopify.com")
-    except: pass
-
-    # 2. DuckDuckGo Dorking
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Content-Type': 'application/x-www-form-urlencoded'}
-        data = f'q=site:myshopify.com "{kw_lower}"'
-        r = requests.post("https://lite.duckduckgo.com/lite/", headers=headers, data=data, timeout=10)
-        for m in MYSHOPIFY_RE.findall(r.text):
-            urls.add(f"https://{m}.myshopify.com")
-    except: pass
-
-    # 3. URLScan (Search by indexed text, sorted by newest)
-    try:
-        query = f'domain:myshopify.com AND "{kw_lower}"'
-        r = requests.get(f"https://urlscan.io/api/v1/search/?q={query}&size=500&sort=time", timeout=15)
+        r = requests.get(
+            "https://crt.sh/",
+            params={'q': f'%.myshopify.com', 'output': 'json'},
+            timeout=30,
+            headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
+        )
         if r.status_code == 200:
-            for res in r.json().get('results', []):
-                m = MYSHOPIFY_RE.search(res.get('page', {}).get('url', ''))
-                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-    except: pass
+            certs = r.json()
+            log(f"   crt.sh: {len(certs)} total myshopify certs found", "INFO")
+            kw_lower = keyword.lower().replace(' ', '')
+            kw_parts = keyword.lower().split()
+            for cert in certs:
+                name = cert.get('common_name', '') or cert.get('name_value', '')
+                name_lower = name.lower()
+                matches = (kw_lower in name_lower or
+                          all(part in name_lower for part in kw_parts) or
+                          any(part in name_lower for part in kw_parts if len(part) > 4))
+                if matches:
+                    m = MYSHOPIFY_RE.search(name)
+                    if m:
+                        urls.add(f"https://{m.group(1)}.myshopify.com")
+    except Exception as e:
+        log(f"   crt.sh error: {e}", "WARN")
 
-    # 🚨 FALLBACK SYSTEM: যদি কিওয়ার্ড দিয়ে খুব কম স্টোর পাওয়া যায় (যেমন < 50)
-    # তাহলে এটি লেটেস্ট ১০০০-২০০০ স্টোর নিয়ে নেবে এবং Phase 2 অটোমেটিক্যালি শুধু 'clothing' স্টোরগুলো ফিল্টার করে নেবে।
-    if len(urls) < 50:
-        log(f"   ⚠️ Niche specific URLs are low ({len(urls)}). Fetching massive recent stores to filter via Phase 2...", "WARN")
-        
-        # AlienVault OTX (Massive Database)
-        try:
-            r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
-            if r.status_code == 200:
-                for entry in r.json().get('passive_dns', []):
-                    h = entry.get('hostname', '').lower()
-                    if h.endswith('.myshopify.com') and '*' not in h:
-                        urls.add(f"https://{h}")
-        except: pass
+    try:
+        r2 = requests.get(
+            "https://crt.sh/",
+            params={'q': '%.myshopify.com', 'output': 'json', 'deduplicate': 'Y'},
+            timeout=30,
+            headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
+        )
+        if r2.status_code == 200:
+            all_certs = r2.json()
+            recent = sorted(all_certs,
+                           key=lambda x: x.get('not_before', ''),
+                           reverse=True)[:2000]
+            for cert in recent:
+                name = cert.get('common_name', '') or cert.get('name_value', '')
+                m = MYSHOPIFY_RE.search(name)
+                if m:
+                    urls.add(f"https://{m.group(1)}.myshopify.com")
+    except Exception as e:
+        log(f"   crt.sh broad error: {e}", "WARN")
 
-        # Recent URLScan (No keyword filter, just newest stores)
+    log(f"   crt.sh: {len(urls)} stores", "INFO")
+    return urls
+
+def source_commoncrawl(keyword):
+    urls = set()
+    log(f"   [CommonCrawl] '{keyword}'...", "INFO")
+    indexes = ['CC-MAIN-2025-08', 'CC-MAIN-2024-51', 'CC-MAIN-2024-46']
+    for idx in indexes:
+        if len(urls) >= 300: break
+        for kv in [keyword.replace(' ', '-'), keyword.replace(' ', ''), keyword]:
+            try:
+                r = requests.get(
+                    f"https://index.commoncrawl.org/{idx}-index",
+                    params={'url': f'*.myshopify.com/*{kv}*',
+                            'output': 'json', 'limit': 500, 'fl': 'url'},
+                    timeout=20)
+                if r.status_code == 200 and r.text.strip():
+                    for line in r.text.strip().split('\n'):
+                        try:
+                            m = MYSHOPIFY_RE.search(json.loads(line).get('url', ''))
+                            if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+                        except: continue
+            except Exception: pass
+            time.sleep(0.5)
+    log(f"   CommonCrawl: {len(urls)} stores", "INFO")
+    return urls
+
+def source_urlscan(keyword):
+    urls = set()
+    log(f"   [URLScan] '{keyword}'...", "INFO")
+    for q in [
+        f"domain:myshopify.com AND page.title:{keyword.replace(' ', '+')}",
+        f"domain:myshopify.com AND page.body:{keyword.replace(' ', '+')}",
+        f"domain:myshopify.com AND page.domain:*{keyword.replace(' ', '-')}*",
+    ]:
         try:
-            r = requests.get("https://urlscan.io/api/v1/search/?q=domain:myshopify.com&size=1000&sort=time", timeout=15)
+            r = requests.get("https://urlscan.io/api/v1/search/",
+                params={'q': q, 'size': 100, 'sort': 'time'},
+                timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
             if r.status_code == 200:
-                for res in r.json().get('results', []):
-                    m = MYSHOPIFY_RE.search(res.get('page', {}).get('url', ''))
+                for result in r.json().get('results', []):
+                    page_url = result.get('page', {}).get('url', '')
+                    m = MYSHOPIFY_RE.search(page_url)
                     if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-        except: pass
+        except Exception: pass
+        time.sleep(0.5)
+    log(f"   URLScan: {len(urls)} stores", "INFO")
+    return urls
 
-    urls_list = list(urls)
-    random.shuffle(urls_list)
-    log(f"   ✅ Database Scraping Complete! {len(urls_list)} raw stores collected for checking.", "SUCCESS")
-    return urls_list
+def source_bing(keyword, country):
+    urls = set()
+    log(f"   [Bing] '{keyword}'...", "INFO")
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    queries = [
+        f'site:myshopify.com "{keyword}" "coming soon"',
+        f'site:myshopify.com "{keyword}" "opening soon"',
+        f'site:myshopify.com "{keyword}" "welcome to our store"',
+        f'site:myshopify.com "{keyword}" "be the first to know"',
+        f'site:myshopify.com "{keyword}"',
+        f'site:myshopify.com {keyword} shop',
+    ]
+    session = requests.Session()
+    for q in queries:
+        if len(urls) >= 150: break
+        for first in [1, 11, 21]:
+            try:
+                r = session.get('https://www.bing.com/search',
+                    params={'q': q, 'first': first, 'count': 10},
+                    headers=headers, timeout=15)
+                if r.status_code == 200:
+                    for m in MYSHOPIFY_RE.finditer(r.text):
+                        urls.add(f"https://{m.group(1)}.myshopify.com")
+                elif r.status_code == 429:
+                    time.sleep(20); break
+            except Exception: pass
+            time.sleep(random.uniform(2, 4))
+        time.sleep(1)
+    log(f"   Bing: {len(urls)} stores", "INFO")
+    return urls
+
+def find_shopify_stores(keyword, country):
+    all_urls = set()
+    all_urls.update(source_crtsh(keyword))
+    log(f"   After crt.sh: {len(all_urls)} total", "INFO")
+    all_urls.update(source_commoncrawl(keyword))
+    log(f"   After CommonCrawl: {len(all_urls)} total", "INFO")
+    all_urls.update(source_urlscan(keyword))
+    all_urls.update(source_bing(keyword, country))
+
+    total = list(all_urls)
+    random.shuffle(total)
+    log(f"📦 Total: {len(total)} unique stores to test", "SUCCESS")
+    return total
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 2: NICHE FILTER & CHECKOUT HTML ANALYSIS
+# PHASE 2: CHECKOUT HTML ANALYSIS
 # ─────────────────────────────────────────────────────────────────────────────
-def check_store_target(base_url, session, keyword):
+def check_store_target(base_url, session):
     ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
     headers = {'User-Agent': ua, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9'}
-    
     try:
-        # Step 1: Visit Homepage
         r = session.get(base_url, headers=headers, timeout=10, allow_redirects=True)
         if r.status_code != 200:
             return {"is_shopify": False, "is_lead": False}
-            
         html_lower = r.text.lower()
         if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
             return {"is_shopify": False, "is_lead": False}
 
-        # 🚨 NICHE CHECK: হোমপেজে কিওয়ার্ড না থাকলে রিজেক্ট!
-        kw_lower = keyword.lower().strip()
-        if kw_lower and kw_lower not in html_lower:
-            return {"is_shopify": True, "is_lead": False, "reason": f"Keyword '{kw_lower}' not found on homepage"}
+        is_password = '/password' in r.url or 'password-page' in html_lower
 
-        # 🚨 PASSWORD CHECK: পাসওয়ার্ড পেজ থাকলে রিজেক্ট!
-        if '/password' in r.url or 'password-page' in html_lower or 'opening soon' in html_lower:
-            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping)"}
-
-        # Step 2: The Checkout Test
         try:
             prod_req = session.get(f"{base_url}/products.json?limit=1", headers=headers, timeout=10)
             if prod_req.status_code != 200:
                 return {"is_shopify": True, "is_lead": False, "reason": "No products.json"}
 
             products = prod_req.json().get('products', [])
+
             if not products:
-                return {"is_shopify": True, "is_lead": False, "reason": "0 products, cannot test checkout"}
+                chk = session.get(f"{base_url}/checkout", headers=headers, timeout=12, allow_redirects=True)
+                chk_lower = chk.text.lower()
+                for phrase in ["isn't accepting payments", "not accepting payments",
+                                "no payment methods", "payment provider hasn't been set up",
+                                "this store is unavailable", "unable to process payment"]:
+                    if phrase in chk_lower:
+                        return {"is_shopify": True, "is_lead": True, "reason": f"0 products + '{phrase}'"}
+                if is_password:
+                    return {"is_shopify": True, "is_lead": True, "reason": "Password + 0 products = new store"}
+                return {"is_shopify": True, "is_lead": False, "reason": "0 products, unclear"}
 
             variant_id = products[0]['variants'][0]['id']
             session.post(f"{base_url}/cart/add.js",
@@ -161,32 +240,27 @@ def check_store_target(base_url, session, keyword):
             chk_html = chk_req.text
             chk_lower = chk_html.lower()
 
-            # Explicit no-payment error = CONFIRMED LEAD
             for phrase in ["isn't accepting payments", "not accepting payments",
                            "no payment methods", "payment provider hasn't been set up",
                            "this store is unavailable"]:
                 if phrase in chk_lower:
                     return {"is_shopify": True, "is_lead": True, "reason": f"CONFIRMED: '{phrase}'"}
 
-            # 🚨 HTML ANALYSIS: Payment keywords = HAS payment (REJECT)
             payment_kws = ['visa', 'mastercard', 'amex', 'american express',
                 'paypal', 'credit card', 'debit card', 'card number',
                 'stripe', 'klarna', 'afterpay', 'shop pay', 'shoppay',
                 'apple pay', 'google pay', 'discover', 'diners',
                 'card-fields', 'payment-method', 'pay with']
-            
             found_pay = [kw for kw in payment_kws if kw in chk_lower]
             if found_pay:
-                return {"is_shopify": True, "is_lead": False, "reason": f"has payment: {found_pay[:2]}"}
+                return {"is_shopify": True, "is_lead": False, "reason": f"has: {found_pay[:2]}"}
 
-            # Redirected away from checkout
             if base_url.replace('https://', '') in chk_req.url and '/checkout' not in chk_req.url:
                 return {"is_shopify": True, "is_lead": True, "reason": "Redirected from checkout = no payment"}
 
-            # Reached checkout, no payment found in HTML = LEAD
             if any(s in chk_lower for s in ['contact information', 'shipping address',
                                               'order summary', 'express checkout', 'your email']):
-                return {"is_shopify": True, "is_lead": True, "reason": "Checkout OK, no payment options in HTML"}
+                return {"is_shopify": True, "is_lead": True, "reason": "Checkout OK, no payment options"}
 
             return {"is_shopify": True, "is_lead": False, "reason": "Inconclusive"}
 
@@ -347,6 +421,11 @@ def _run():
     session.max_redirects = 5
     total_leads = 0
 
+    log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
+    log("🚀 PHASE 1 — HUNTING NEW NO-PAYMENT STORES", "SUCCESS")
+    log(f"🎯 Target: {min_leads} leads | Sources: crt.sh + CommonCrawl + URLScan + Bing", "INFO")
+    log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
+
     for kw_row in ready_kws:
         if not automation_running: break
         if total_leads >= min_leads:
@@ -357,49 +436,46 @@ def _run():
         kw_id    = kw_row.get('id', '')
         kw_leads = rej_pay = rej_other = 0
 
-        log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-        log(f"🚀 PHASE 1 — SCRAPING NEW STORES FOR: [{keyword}]", "SUCCESS")
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
+        log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        raw_store_urls = scrape_massive_store_list(keyword)
+        try:
+            store_urls = find_shopify_stores(keyword, country)
+        except Exception as e:
+            log(f"Search failed: {e}", "WARN"); store_urls = []
 
-        if not raw_store_urls:
-            log(f"⚠️  No URLs found for '{keyword}'. Moving to next...", "WARN")
+        if not store_urls:
+            log("⚠️  No URLs found for this keyword. Moving to next...", "WARN")
+            call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
             continue
 
-        log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-        log(f"🚀 PHASE 2 — CHECKING CHECKOUT & PAYMENT GATEWAY", "SUCCESS")
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
+        log(f"🔍 Checking {len(store_urls)} stores for payment gateways...", "INFO")
 
-        for idx, url in enumerate(raw_store_urls):
+        for idx, url in enumerate(store_urls):
             if not automation_running: break
             if total_leads >= min_leads: break
 
             try:
-                result = check_store_target(url, session, keyword)
+                # এখানে আপনার দেওয়া কোডের check_store_target ব্যবহার করা হয়েছে
+                result = check_store_target(url, session)
                 if not result.get("is_shopify"): continue
 
                 if not result.get("is_lead"):
                     reason = result.get('reason', '')
-                    
-                    # যদি কিওয়ার্ড না থাকে, তাহলে টার্মিনালে স্প্যাম করবে না (যাতে লগ ক্লিন থাকে)
-                    if "Keyword" in reason:
-                        continue
-                        
-                    if any(w in reason.lower() for w in ['has payment', 'visa', 'stripe', 'paypal']):
+                    if any(w in reason.lower() for w in ['has:', 'payment', 'visa', 'stripe']):
                         rej_pay += 1
                     else:
                         rej_other += 1
-                    
-                    # টার্মিনালে দেখাবে কেন রিজেক্ট হলো
-                    log(f"   [{idx+1}/{len(raw_store_urls)}] 🚫 SKIP ({reason}) — {url}", "WARN")
+                        
+                    # 4999 স্টোরের ক্ষেত্রে লগ স্প্যাম এড়াতে প্রথম ৫টি এবং এরপর প্রতি ১০টি পর পর লগ দেখাবে
+                    if idx < 5:
+                        log(f"   [{idx+1}] SKIP ({reason}) — {url}", "WARN")
+                    elif (idx + 1) % 10 == 0:
+                        log(f"   Progress: [{idx+1}/{len(store_urls)}] leads:{kw_leads} paid:{rej_pay} other:{rej_other}", "INFO")
                     time.sleep(0.5)
                     continue
 
                 # ✅ LEAD FOUND!
-                log(f"   [{idx+1}/{len(raw_store_urls)}] 🎯 100% MATCH: {result.get('reason')} — collecting info...", "SUCCESS")
-                
+                log(f"   🎯 100% MATCH: {result.get('reason')} — collecting info...", "SUCCESS")
                 info = get_store_info(url, session)
                 
                 save_resp = call_sheet({
