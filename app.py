@@ -48,48 +48,37 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: ONLY SSL (crt.sh) SCRAPING (No Bing, No URLScan)
+# PHASE 1: MASSIVE SSL SCRAPING (5000+ STORES)
 # ─────────────────────────────────────────────────────────────────────────────
-def scrape_all_ssl_stores(keyword):
+def scrape_all_ssl_stores():
     """
-    শুধুমাত্র crt.sh থেকে সদ্য ক্রিয়েট হওয়া স্টোরগুলো স্ক্র্যাপ করে 
-    একটি ডাটাবেস (লিস্ট) তৈরি করবে। Timeout এড়ানোর জন্য স্মার্ট কোয়েরি ব্যবহার করা হয়েছে।
+    কোনো কিওয়ার্ড ছাড়াই crt.sh থেকে লেটেস্ট ৫০০০+ শপিফাই স্টোর স্ক্র্যাপ করবে।
     """
     urls = set()
-    kw_clean = keyword.lower().replace(' ', '')
+    log(f"   [SSL Database] Fetching 5000+ newly created Shopify stores...", "INFO")
     
-    log(f"   [SSL Database] Fetching newly created stores for '{kw_clean}'...", "INFO")
-    
-    # Timeout এড়ানোর জন্য কিওয়ার্ডের সাথে কিছু কমন শব্দ জুড়ে দিয়ে ছোট ছোট সার্চ করা হচ্ছে
-    queries = [
-        f"%{kw_clean}%.myshopify.com",
-        f"%shop{kw_clean}%.myshopify.com",
-        f"%{kw_clean}shop%.myshopify.com",
-        f"%my{kw_clean}%.myshopify.com",
-        f"%the{kw_clean}%.myshopify.com",
-        f"%{kw_clean}store%.myshopify.com"
-    ]
-    
-    for q in queries:
-        if len(urls) > 1500: # ম্যাক্সিমাম ১৫০০ স্টোর কালেক্ট করবে
-            break
+    for attempt in range(3):
         try:
+            # Broad query to get ALL recent myshopify certs
             r = requests.get(
-                f"https://crt.sh/?q={q}&output=json",
-                timeout=20,
-                headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
+                "https://crt.sh/",
+                params={'q': '%.myshopify.com', 'output': 'json', 'deduplicate': 'Y'},
+                timeout=45,
+                headers={'User-Agent': 'Mozilla/5.0'}
             )
             if r.status_code == 200:
                 certs = r.json()
+                log(f"   crt.sh: {len(certs)} total myshopify certs found!", "INFO")
                 for cert in certs:
                     name = cert.get('common_name', '') or cert.get('name_value', '')
                     for n in name.split('\n'):
                         m = MYSHOPIFY_RE.search(n)
                         if m:
                             urls.add(f"https://{m.group(1)}.myshopify.com")
+                break # Success, exit retry loop
         except Exception as e:
-            pass # Timeout হলে ইগনোর করে পরের কোয়েরিতে যাবে
-        time.sleep(1)
+            log(f"   crt.sh timeout/error (Attempt {attempt+1}/3). Retrying...", "WARN")
+            time.sleep(3)
 
     urls_list = list(urls)
     random.shuffle(urls_list)
@@ -97,32 +86,39 @@ def scrape_all_ssl_stores(keyword):
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 2: CHECKOUT HTML ANALYSIS
+# PHASE 2: NICHE FILTER & CHECKOUT HTML ANALYSIS
 # ─────────────────────────────────────────────────────────────────────────────
-def check_store_target(base_url, session):
+def check_store_target(base_url, session, keyword):
     ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
     headers = {'User-Agent': ua, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9'}
+    
     try:
+        # Step 1: Visit Homepage
         r = session.get(base_url, headers=headers, timeout=10, allow_redirects=True)
         if r.status_code != 200:
             return {"is_shopify": False, "is_lead": False}
+            
         html_lower = r.text.lower()
         if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
             return {"is_shopify": False, "is_lead": False}
 
-        is_password = '/password' in r.url or 'password-page' in html_lower
+        # 🚨 NICHE CHECK: হোমপেজে কিওয়ার্ড না থাকলে রিজেক্ট!
+        kw_lower = keyword.lower().strip()
+        if kw_lower and kw_lower not in html_lower:
+            return {"is_shopify": True, "is_lead": False, "reason": f"Keyword '{kw_lower}' not found on homepage"}
 
+        # 🚨 PASSWORD CHECK: পাসওয়ার্ড পেজ থাকলে রিজেক্ট!
+        if '/password' in r.url or 'password-page' in html_lower or 'opening soon' in html_lower:
+            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping)"}
+
+        # Step 2: The Checkout Test
         try:
             prod_req = session.get(f"{base_url}/products.json?limit=1", headers=headers, timeout=10)
             if prod_req.status_code != 200:
                 return {"is_shopify": True, "is_lead": False, "reason": "No products.json"}
 
             products = prod_req.json().get('products', [])
-
             if not products:
-                # প্রোডাক্ট না থাকলে চেকআউটে যাওয়া যায় না, তাই স্কিপ করবে
-                if is_password:
-                    return {"is_shopify": True, "is_lead": True, "reason": "Password + 0 products = new store"}
                 return {"is_shopify": True, "is_lead": False, "reason": "0 products, cannot test checkout"}
 
             variant_id = products[0]['variants'][0]['id']
@@ -134,7 +130,7 @@ def check_store_target(base_url, session):
             chk_html = chk_req.text
             chk_lower = chk_html.lower()
 
-            # Explicit no-payment = CONFIRMED LEAD
+            # Explicit no-payment error = CONFIRMED LEAD
             for phrase in ["isn't accepting payments", "not accepting payments",
                            "no payment methods", "payment provider hasn't been set up",
                            "this store is unavailable"]:
@@ -324,6 +320,13 @@ def _run():
     log("🚀 PHASE 1 — SCRAPING ALL NEW STORES TO DATABASE", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
+    # 1. প্রথমে সব স্টোর স্ক্র্যাপ করে মেমোরিতে ডাটাবেস বানাবে (৫০০০+ স্টোর)
+    raw_store_urls = scrape_all_ssl_stores()
+
+    if not raw_store_urls:
+        log("⚠️  No URLs found from SSL. Exiting...", "WARN")
+        return
+
     for kw_row in ready_kws:
         if not automation_running: break
         if total_leads >= min_leads:
@@ -335,45 +338,38 @@ def _run():
         kw_leads = rej_pay = rej_other = 0
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
-
-        # 1. প্রথমে সব স্টোর স্ক্র্যাপ করে মেমোরিতে ডাটাবেস বানাবে
-        try:
-            store_urls = scrape_all_ssl_stores(keyword)
-        except Exception as e:
-            log(f"Search failed: {e}", "WARN"); store_urls = []
-
-        if not store_urls:
-            log("⚠️  No URLs found for this keyword. Moving to next...", "WARN")
-            call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
-            continue
-
         log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-        log(f"🚀 PHASE 2 — CHECKING CHECKOUT PAGES ONE BY ONE", "SUCCESS")
+        log(f"🚀 PHASE 2 — FILTERING BY NICHE & CHECKING CHECKOUT", "SUCCESS")
         log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
-        # 2. এবার ডাটাবেস থেকে একটা একটা করে চেকআউট পেজ চেক করবে
-        for idx, url in enumerate(store_urls):
+        # 2. এবার ডাটাবেস থেকে একটা একটা করে স্টোর চেক করবে
+        for idx, url in enumerate(raw_store_urls):
             if not automation_running: break
             if total_leads >= min_leads: break
 
             try:
-                result = check_store_target(url, session)
+                result = check_store_target(url, session, keyword)
                 if not result.get("is_shopify"): continue
 
                 if not result.get("is_lead"):
                     reason = result.get('reason', '')
+                    
+                    # যদি কিওয়ার্ড না থাকে, তাহলে টার্মিনালে স্প্যাম করবে না (যাতে লগ ক্লিন থাকে)
+                    if "Keyword" in reason:
+                        continue
+                        
                     if any(w in reason.lower() for w in ['has payment', 'visa', 'stripe', 'paypal']):
                         rej_pay += 1
                     else:
                         rej_other += 1
                     
                     # টার্মিনালে দেখাবে কেন রিজেক্ট হলো
-                    log(f"   [{idx+1}/{len(store_urls)}] 🚫 SKIP ({reason}) — {url}", "WARN")
+                    log(f"   [{idx+1}/{len(raw_store_urls)}] 🚫 SKIP ({reason}) — {url}", "WARN")
                     time.sleep(0.5)
                     continue
 
                 # ✅ LEAD FOUND!
-                log(f"   [{idx+1}/{len(store_urls)}] 🎯 100% MATCH: {result.get('reason')} — collecting info...", "SUCCESS")
+                log(f"   [{idx+1}/{len(raw_store_urls)}] 🎯 100% MATCH: {result.get('reason')} — collecting info...", "SUCCESS")
                 
                 # 3. কন্টাক্ট পেজ থেকে ইমেইল ও নাম্বার নিবে
                 info = get_store_info(url, session)
@@ -397,7 +393,7 @@ def _run():
                 time.sleep(random.uniform(1.5, 3))
 
             except Exception as e:
-                log(f"   Error: {e}", "WARN"); continue
+                continue
 
         call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': kw_leads})
         log(f"✅ '{keyword}' done → {kw_leads} leads found", "SUCCESS")
