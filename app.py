@@ -21,6 +21,10 @@ automation_thread = None
 scheduler = BackgroundScheduler()
 scheduler.start()
 
+# Dashboard Caching Variables
+last_status_fetch = 0
+cached_status = {'total_leads': 0, 'emails_sent': 0, 'kw_total': 0, 'kw_used': 0}
+
 # ── Apps Script communication ─────────────────────────────────────────────────
 def call_sheet(payload):
     script_url = os.environ.get('APPS_SCRIPT_URL', '')
@@ -124,7 +128,7 @@ def check_store_target(base_url, session, keyword):
     ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
     headers = {'User-Agent': ua, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9'}
     try:
-        # Fast Niche Check (Timeout 5s for speed)
+        # Fast Niche Check
         r = session.get(base_url, headers=headers, timeout=5, allow_redirects=True)
         if r.status_code != 200:
             return {"is_shopify": False, "is_lead": False}
@@ -363,7 +367,6 @@ def _run():
         country  = kw_row.get('country', '')
         kw_id    = kw_row.get('id', '')
         
-        # কাউন্টারগুলো সেট করা হলো
         kw_leads = rej_pay = rej_other = rej_keyword = 0
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
@@ -390,7 +393,6 @@ def _run():
                 if not result.get("is_lead"):
                     reason = result.get('reason', '')
                     
-                    # কাউন্টার আপডেট করা হচ্ছে
                     if "Keyword missing" in reason:
                         rej_keyword += 1
                     elif any(w in reason.lower() for w in ['has:', 'payment', 'visa', 'stripe']):
@@ -398,7 +400,6 @@ def _run():
                     else:
                         rej_other += 1
                         
-                    # 🚨 ফিক্স: এখন প্রতি ১০টি স্টোর চেক করার পর আপনাকে আপডেট দেখাবে
                     processed_count = idx + 1
                     if processed_count % 10 == 0:
                         log(f"   ⚡ Progress: [{processed_count}/{len(store_urls)}] Checked | Niche Mismatch: {rej_keyword} | Paid: {rej_pay}", "INFO")
@@ -477,24 +478,37 @@ def index():
 
 @app.route('/api/status')
 def api_status():
+    global last_status_fetch, cached_status
     script_url = os.environ.get('APPS_SCRIPT_URL', '')
-    total_leads = emails_sent = kw_total = kw_used = 0
-    if script_url:
+    
+    # 🚨 FIX: Dashboard will only fetch data from Google Sheets once every 60 seconds
+    if script_url and (time.time() - last_status_fetch > 60):
         try:
-            lr = call_sheet({'action': 'get_leads'})
-            if not lr.get('error'):
-                leads = lr.get('leads', [])
-                total_leads = len(leads)
-                emails_sent = sum(1 for l in leads if l.get('email_sent') == 'sent')
-            kr = call_sheet({'action': 'get_keywords'})
-            if not kr.get('error'):
-                kws = kr.get('keywords', [])
-                kw_total = len(kws)
-                kw_used  = sum(1 for k in kws if k.get('status') == 'used')
-        except: pass
-    return jsonify({'running': automation_running, 'total_leads': total_leads,
-                    'emails_sent': emails_sent, 'kw_total': kw_total,
-                    'kw_used': kw_used, 'script_connected': bool(script_url)})
+            # Using direct requests instead of call_sheet to prevent "Sheet timeout" logs in terminal
+            r1 = requests.post(script_url, json={'action': 'get_leads'}, timeout=15)
+            if r1.status_code == 200:
+                leads = r1.json().get('leads', [])
+                cached_status['total_leads'] = len(leads)
+                cached_status['emails_sent'] = sum(1 for l in leads if l.get('email_sent') == 'sent')
+            
+            r2 = requests.post(script_url, json={'action': 'get_keywords'}, timeout=15)
+            if r2.status_code == 200:
+                kws = r2.json().get('keywords', [])
+                cached_status['kw_total'] = len(kws)
+                cached_status['kw_used'] = sum(1 for k in kws if k.get('status') == 'used')
+                
+            last_status_fetch = time.time()
+        except:
+            pass # Fail silently, keep old cache so it doesn't spam logs
+
+    return jsonify({
+        'running': automation_running, 
+        'total_leads': cached_status['total_leads'],
+        'emails_sent': cached_status['emails_sent'], 
+        'kw_total': cached_status['kw_total'],
+        'kw_used': cached_status['kw_used'], 
+        'script_connected': bool(script_url)
+    })
 
 @app.route('/api/logs/stream')
 def stream_logs():
