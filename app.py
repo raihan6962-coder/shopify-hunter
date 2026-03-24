@@ -48,60 +48,72 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: MASSIVE DATABASE SCRAPING (NICHE & NEW STORES ONLY)
+# PHASE 1: MASSIVE DATABASE SCRAPING (SMART NICHE + FALLBACK)
 # ─────────────────────────────────────────────────────────────────────────────
 def scrape_massive_store_list(keyword):
     """
-    এখন এটি কিওয়ার্ড এবং গত ১ সপ্তাহের (New Stores) ফিল্টার ব্যবহার করে স্টোর খুঁজবে।
+    স্মার্ট স্ক্র্যাপিং: প্রথমে কিওয়ার্ড দিয়ে সার্চ করবে। যদি রেজাল্ট কম আসে, 
+    তাহলে রিসেন্ট স্টোর কালেক্ট করে Phase 2 এর উপর ফিল্টারিং এর দায়িত্ব ছেড়ে দেবে।
     """
     urls = set()
     kw_lower = keyword.lower().strip()
-    kw_url_safe = kw_lower.replace(' ', '-')
-    log(f"   [Database] Hunting NEW Shopify stores (Past 7 Days) for niche: '{keyword}'...", "INFO")
+    log(f"   [Database] Hunting NEW Shopify stores for niche: '{keyword}'...", "INFO")
 
-    # 1. DuckDuckGo Dorking (Past 1 Week Filter) - Super effective for new niche stores
+    # 1. Bing Dorking (Highly effective for niche stores)
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        for page in range(0, 40, 10):  # First 4 pages
+            r = requests.get(f"https://www.bing.com/search?q=site:myshopify.com+\"{kw_lower}\"&first={page}", headers=headers, timeout=10)
+            for m in MYSHOPIFY_RE.findall(r.text):
+                urls.add(f"https://{m}.myshopify.com")
+    except: pass
+
+    # 2. DuckDuckGo Dorking
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Content-Type': 'application/x-www-form-urlencoded'}
-        # df=w means past week (গত ১ সপ্তাহ)
-        data = f'q=site:myshopify.com "{kw_lower}"&df=w'
-        r = requests.post("https://lite.duckduckgo.com/lite/", headers=headers, data=data, timeout=15)
+        data = f'q=site:myshopify.com "{kw_lower}"'
+        r = requests.post("https://lite.duckduckgo.com/lite/", headers=headers, data=data, timeout=10)
         for m in MYSHOPIFY_RE.findall(r.text):
             urls.add(f"https://{m}.myshopify.com")
     except: pass
 
-    # 2. URLScan (Filtered by keyword AND past 7 days)
+    # 3. URLScan (Search by indexed text, sorted by newest)
     try:
-        query = f'domain:myshopify.com AND "{kw_lower}" AND date:>now-7d'
-        r = requests.get(f"https://urlscan.io/api/v1/search/?q={query}&size=1000&sort=time", timeout=15)
+        query = f'domain:myshopify.com AND "{kw_lower}"'
+        r = requests.get(f"https://urlscan.io/api/v1/search/?q={query}&size=500&sort=time", timeout=15)
         if r.status_code == 200:
             for res in r.json().get('results', []):
                 m = MYSHOPIFY_RE.search(res.get('page', {}).get('url', ''))
                 if m: urls.add(f"https://{m.group(1)}.myshopify.com")
     except: pass
 
-    # 3. AlienVault OTX (Passive DNS) - Only keeping domains with keyword in URL
-    try:
-        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
-        if r.status_code == 200:
-            for entry in r.json().get('passive_dns', []):
-                h = entry.get('hostname', '').lower()
-                if h.endswith('.myshopify.com') and '*' not in h and kw_url_safe in h:
-                    urls.add(f"https://{h}")
-    except: pass
+    # 🚨 FALLBACK SYSTEM: যদি কিওয়ার্ড দিয়ে খুব কম স্টোর পাওয়া যায় (যেমন < 50)
+    # তাহলে এটি লেটেস্ট ১০০০-২০০০ স্টোর নিয়ে নেবে এবং Phase 2 অটোমেটিক্যালি শুধু 'clothing' স্টোরগুলো ফিল্টার করে নেবে।
+    if len(urls) < 50:
+        log(f"   ⚠️ Niche specific URLs are low ({len(urls)}). Fetching massive recent stores to filter via Phase 2...", "WARN")
+        
+        # AlienVault OTX (Massive Database)
+        try:
+            r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
+            if r.status_code == 200:
+                for entry in r.json().get('passive_dns', []):
+                    h = entry.get('hostname', '').lower()
+                    if h.endswith('.myshopify.com') and '*' not in h:
+                        urls.add(f"https://{h}")
+        except: pass
 
-    # 4. CertSpotter (Recent SSL Certs) - Only keeping domains with keyword in URL
-    try:
-        r = requests.get('https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', timeout=15)
-        if r.status_code == 200:
-            for cert in r.json():
-                for name in cert.get('dns_names', []):
-                    if name.endswith('.myshopify.com') and kw_url_safe in name:
-                        urls.add(f"https://{name}")
-    except: pass
+        # Recent URLScan (No keyword filter, just newest stores)
+        try:
+            r = requests.get("https://urlscan.io/api/v1/search/?q=domain:myshopify.com&size=1000&sort=time", timeout=15)
+            if r.status_code == 200:
+                for res in r.json().get('results', []):
+                    m = MYSHOPIFY_RE.search(res.get('page', {}).get('url', ''))
+                    if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+        except: pass
 
     urls_list = list(urls)
     random.shuffle(urls_list)
-    log(f"   ✅ Database Scraping Complete! {len(urls_list)} highly targeted NEW stores collected.", "SUCCESS")
+    log(f"   ✅ Database Scraping Complete! {len(urls_list)} raw stores collected for checking.", "SUCCESS")
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -335,7 +347,6 @@ def _run():
     session.max_redirects = 5
     total_leads = 0
 
-    # 1. লুপের ভেতরে স্ক্র্যাপিং নিয়ে আসা হয়েছে, যাতে কিওয়ার্ড অনুযায়ী নতুন স্টোর খোঁজে
     for kw_row in ready_kws:
         if not automation_running: break
         if total_leads >= min_leads:
@@ -350,11 +361,10 @@ def _run():
         log(f"🚀 PHASE 1 — SCRAPING NEW STORES FOR: [{keyword}]", "SUCCESS")
         log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
-        # কিওয়ার্ড অনুযায়ী গত ১ সপ্তাহের স্টোর কালেক্ট করবে
         raw_store_urls = scrape_massive_store_list(keyword)
 
         if not raw_store_urls:
-            log(f"⚠️  No new URLs found for '{keyword}'. Moving to next...", "WARN")
+            log(f"⚠️  No URLs found for '{keyword}'. Moving to next...", "WARN")
             continue
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
@@ -362,7 +372,6 @@ def _run():
         log(f"🚀 PHASE 2 — CHECKING CHECKOUT & PAYMENT GATEWAY", "SUCCESS")
         log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
-        # 2. এবার ডাটাবেস থেকে একটা একটা করে স্টোর চেক করবে
         for idx, url in enumerate(raw_store_urls):
             if not automation_running: break
             if total_leads >= min_leads: break
@@ -391,10 +400,8 @@ def _run():
                 # ✅ LEAD FOUND!
                 log(f"   [{idx+1}/{len(raw_store_urls)}] 🎯 100% MATCH: {result.get('reason')} — collecting info...", "SUCCESS")
                 
-                # 3. কন্টাক্ট পেজ থেকে ইমেইল ও নাম্বার নিবে
                 info = get_store_info(url, session)
                 
-                # 4. গুগল শিটে লিড সেভ করবে
                 save_resp = call_sheet({
                     'action': 'save_lead', 'store_name': info['store_name'],
                     'url': url, 'email': info['email'] or '',
