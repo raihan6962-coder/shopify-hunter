@@ -8,7 +8,7 @@ import random
 import requests
 from bs4 import BeautifulSoup
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 import os
 
@@ -48,137 +48,71 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: RECENT + NICHE-FILTERED STORE DISCOVERY
-# Only stores created in the last 7 days + keyword in subdomain name
+# PHASE 1: MASSIVE DATABASE SCRAPING (NICHE & NEW STORES ONLY)
 # ─────────────────────────────────────────────────────────────────────────────
-def scrape_recent_niche_stores(keyword):
+def scrape_massive_store_list(keyword):
     """
-    ৩টি পদ্ধতিতে শুধু সাম্প্রতিক (৭ দিনের মধ্যে) স্টোর খুঁজবে।
-    Keyword দিয়ে subdomain pre-filter করবে → শুধু niche-matched stores।
+    এখন এটি কিওয়ার্ড এবং গত ১ সপ্তাহের (New Stores) ফিল্টার ব্যবহার করে স্টোর খুঁজবে।
     """
     urls = set()
-    kw = keyword.lower().replace(' ', '')
-    kw_words = keyword.lower().split()
-    cutoff = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+    kw_lower = keyword.lower().strip()
+    kw_url_safe = kw_lower.replace(' ', '-')
+    log(f"   [Database] Hunting NEW Shopify stores (Past 7 Days) for niche: '{keyword}'...", "INFO")
 
-    def is_niche_match(subdomain):
-        """Check if keyword is in subdomain name — fast pre-filter, no HTTP needed."""
-        sub = subdomain.lower()
-        # Direct keyword match
-        if kw in sub:
-            return True
-        # Any keyword word match
-        for word in kw_words:
-            if len(word) >= 3 and word in sub:
-                return True
-        return False
-
-    log(f"   🔍 Searching for recent '{keyword}' stores (last 7 days)...", "INFO")
-
-    # ── Method 1: URLScan — sorted by time, keyword in domain ────────────────
+    # 1. DuckDuckGo Dorking (Past 1 Week Filter) - Super effective for new niche stores
     try:
-        # URLScan এ keyword দিয়ে domain search করলে সাম্প্রতিক niche stores পাওয়া যায়
-        r = requests.get(
-            f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com+AND+domain:{kw}&size=500&sort=time",
-            timeout=15, headers={'User-Agent': 'Mozilla/5.0'}
-        )
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Content-Type': 'application/x-www-form-urlencoded'}
+        # df=w means past week (গত ১ সপ্তাহ)
+        data = f'q=site:myshopify.com "{kw_lower}"&df=w'
+        r = requests.post("https://lite.duckduckgo.com/lite/", headers=headers, data=data, timeout=15)
+        for m in MYSHOPIFY_RE.findall(r.text):
+            urls.add(f"https://{m}.myshopify.com")
+    except: pass
+
+    # 2. URLScan (Filtered by keyword AND past 7 days)
+    try:
+        query = f'domain:myshopify.com AND "{kw_lower}" AND date:>now-7d'
+        r = requests.get(f"https://urlscan.io/api/v1/search/?q={query}&size=1000&sort=time", timeout=15)
         if r.status_code == 200:
-            found = 0
             for res in r.json().get('results', []):
-                # Date filter — only last 7 days
-                task_time = res.get('task', {}).get('time', '')[:10]
-                if task_time and task_time < cutoff:
-                    continue  # Too old
-                page_url = res.get('page', {}).get('url', '')
-                m = MYSHOPIFY_RE.search(page_url)
-                if m and is_niche_match(m.group(1)):
-                    urls.add(f"https://{m.group(1)}.myshopify.com")
-                    found += 1
-            log(f"   URLScan (7d+niche): {found} stores", "INFO")
-    except Exception as e:
-        log(f"   URLScan error: {e}", "WARN")
+                m = MYSHOPIFY_RE.search(res.get('page', {}).get('url', ''))
+                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+    except: pass
 
-    # ── Method 2: crt.sh — SSL cert issued in last 7 days ────────────────────
+    # 3. AlienVault OTX (Passive DNS) - Only keeping domains with keyword in URL
     try:
-        r = requests.get(
-            f"https://crt.sh/?q=%25{kw}%25.myshopify.com&output=json",
-            timeout=12, headers={'User-Agent': 'Mozilla/5.0'}
-        )
+        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
         if r.status_code == 200:
-            found = 0
-            for entry in r.json():
-                # Only certs issued in last 7 days
-                not_before = entry.get('not_before', '')[:10]
-                if not_before and not_before < cutoff:
-                    continue
-                name = entry.get('name_value', '').lower()
-                for domain in name.split('\n'):
-                    domain = domain.strip().replace('*.', '')
-                    if domain.endswith('.myshopify.com') and '*' not in domain:
-                        sub = domain.replace('.myshopify.com', '')
-                        if is_niche_match(sub):
-                            urls.add(f"https://{domain}")
-                            found += 1
-            log(f"   crt.sh (7d+niche): {found} stores", "INFO")
-    except Exception as e:
-        log(f"   crt.sh error: {e}", "WARN")
-
-    # ── Method 3: AlienVault OTX — passive DNS ───────────────────────────────
-    try:
-        r = requests.get(
-            "https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns",
-            timeout=15, headers={'User-Agent': 'Mozilla/5.0'}
-        )
-        if r.status_code == 200:
-            found = 0
             for entry in r.json().get('passive_dns', []):
-                # Date filter
-                first_seen = entry.get('first', '')[:10]
-                if first_seen and first_seen < cutoff:
-                    continue
                 h = entry.get('hostname', '').lower()
-                if h.endswith('.myshopify.com') and '*' not in h:
-                    sub = h.replace('.myshopify.com', '')
-                    if is_niche_match(sub):
-                        urls.add(f"https://{h}")
-                        found += 1
-            log(f"   AlienVault (7d+niche): {found} stores", "INFO")
-    except Exception as e:
-        log(f"   AlienVault error: {e}", "WARN")
+                if h.endswith('.myshopify.com') and '*' not in h and kw_url_safe in h:
+                    urls.add(f"https://{h}")
+    except: pass
 
-    # ── Method 4: Anubis subdomain scanner ───────────────────────────────────
+    # 4. CertSpotter (Recent SSL Certs) - Only keeping domains with keyword in URL
     try:
-        r = requests.get(
-            "https://jldc.me/anubis/subdomains/myshopify.com",
-            timeout=15, headers={'User-Agent': 'Mozilla/5.0'}
-        )
+        r = requests.get('https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', timeout=15)
         if r.status_code == 200:
-            found = 0
-            for h in r.json():
-                h = str(h).lower()
-                if h.endswith('.myshopify.com') and '*' not in h:
-                    sub = h.replace('.myshopify.com', '')
-                    if is_niche_match(sub):
-                        urls.add(f"https://{h}")
-                        found += 1
-            log(f"   Anubis (niche filter): {found} stores", "INFO")
-    except Exception as e:
-        log(f"   Anubis error: {e}", "WARN")
+            for cert in r.json():
+                for name in cert.get('dns_names', []):
+                    if name.endswith('.myshopify.com') and kw_url_safe in name:
+                        urls.add(f"https://{name}")
+    except: pass
 
     urls_list = list(urls)
     random.shuffle(urls_list)
-    log(f"   ✅ Total recent+niche stores: {len(urls_list)}", "SUCCESS")
+    log(f"   ✅ Database Scraping Complete! {len(urls_list)} highly targeted NEW stores collected.", "SUCCESS")
     return urls_list
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 2: NICHE FILTER & CHECKOUT HTML ANALYSIS (same as before)
+# PHASE 2: NICHE FILTER & CHECKOUT HTML ANALYSIS
 # ─────────────────────────────────────────────────────────────────────────────
 def check_store_target(base_url, session, keyword):
     ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
     headers = {'User-Agent': ua, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9'}
     
     try:
+        # Step 1: Visit Homepage
         r = session.get(base_url, headers=headers, timeout=10, allow_redirects=True)
         if r.status_code != 200:
             return {"is_shopify": False, "is_lead": False}
@@ -187,13 +121,16 @@ def check_store_target(base_url, session, keyword):
         if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
             return {"is_shopify": False, "is_lead": False}
 
+        # 🚨 NICHE CHECK: হোমপেজে কিওয়ার্ড না থাকলে রিজেক্ট!
         kw_lower = keyword.lower().strip()
         if kw_lower and kw_lower not in html_lower:
             return {"is_shopify": True, "is_lead": False, "reason": f"Keyword '{kw_lower}' not found on homepage"}
 
+        # 🚨 PASSWORD CHECK: পাসওয়ার্ড পেজ থাকলে রিজেক্ট!
         if '/password' in r.url or 'password-page' in html_lower or 'opening soon' in html_lower:
             return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping)"}
 
+        # Step 2: The Checkout Test
         try:
             prod_req = session.get(f"{base_url}/products.json?limit=1", headers=headers, timeout=10)
             if prod_req.status_code != 200:
@@ -212,12 +149,14 @@ def check_store_target(base_url, session, keyword):
             chk_html = chk_req.text
             chk_lower = chk_html.lower()
 
+            # Explicit no-payment error = CONFIRMED LEAD
             for phrase in ["isn't accepting payments", "not accepting payments",
                            "no payment methods", "payment provider hasn't been set up",
                            "this store is unavailable"]:
                 if phrase in chk_lower:
                     return {"is_shopify": True, "is_lead": True, "reason": f"CONFIRMED: '{phrase}'"}
 
+            # 🚨 HTML ANALYSIS: Payment keywords = HAS payment (REJECT)
             payment_kws = ['visa', 'mastercard', 'amex', 'american express',
                 'paypal', 'credit card', 'debit card', 'card number',
                 'stripe', 'klarna', 'afterpay', 'shop pay', 'shoppay',
@@ -228,9 +167,11 @@ def check_store_target(base_url, session, keyword):
             if found_pay:
                 return {"is_shopify": True, "is_lead": False, "reason": f"has payment: {found_pay[:2]}"}
 
+            # Redirected away from checkout
             if base_url.replace('https://', '') in chk_req.url and '/checkout' not in chk_req.url:
                 return {"is_shopify": True, "is_lead": True, "reason": "Redirected from checkout = no payment"}
 
+            # Reached checkout, no payment found in HTML = LEAD
             if any(s in chk_lower for s in ['contact information', 'shipping address',
                                               'order summary', 'express checkout', 'your email']):
                 return {"is_shopify": True, "is_lead": True, "reason": "Checkout OK, no payment options in HTML"}
@@ -244,7 +185,7 @@ def check_store_target(base_url, session, keyword):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EMAIL + PHONE EXTRACTION (same as before)
+# EMAIL + PHONE EXTRACTION
 # ─────────────────────────────────────────────────────────────────────────────
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 SKIP_EMAIL = ['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg',
@@ -296,7 +237,8 @@ def get_store_info(base_url, session):
                     result['store_name'] = name.strip()[:80]
             if not result['email']:
                 e = extract_email(html, soup)
-                if e: result['email'] = e
+                if e:
+                    result['email'] = e
             if not result['phone']:
                 result['phone'] = extract_phone(html)
         except: continue
@@ -319,7 +261,7 @@ def get_store_info(base_url, session):
     return result
 
 
-# ── AI Email generation (same as before) ─────────────────────────────────────
+# ── AI Email generation ───────────────────────────────────────────────────────
 def generate_email(tpl_subject, tpl_body, lead, groq_key):
     try:
         prompt = f"""Write a short cold email to a Shopify store owner.
@@ -393,6 +335,7 @@ def _run():
     session.max_redirects = 5
     total_leads = 0
 
+    # 1. লুপের ভেতরে স্ক্র্যাপিং নিয়ে আসা হয়েছে, যাতে কিওয়ার্ড অনুযায়ী নতুন স্টোর খোঁজে
     for kw_row in ready_kws:
         if not automation_running: break
         if total_leads >= min_leads:
@@ -403,23 +346,23 @@ def _run():
         kw_id    = kw_row.get('id', '')
         kw_leads = rej_pay = rej_other = 0
 
-        log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-        log("🚀 PHASE 1 — FINDING RECENT NICHE STORES (last 7 days)", "SUCCESS")
+        log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
+        log(f"🚀 PHASE 1 — SCRAPING NEW STORES FOR: [{keyword}]", "SUCCESS")
         log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
-        # Phase 1: Get recent + niche-matched stores
-        raw_store_urls = scrape_recent_niche_stores(keyword)
+        # কিওয়ার্ড অনুযায়ী গত ১ সপ্তাহের স্টোর কালেক্ট করবে
+        raw_store_urls = scrape_massive_store_list(keyword)
 
         if not raw_store_urls:
-            log("⚠️  No recent niche stores found. Try different keyword.", "WARN")
-            call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
+            log(f"⚠️  No new URLs found for '{keyword}'. Moving to next...", "WARN")
             continue
 
+        log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
         log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-        log(f"🚀 PHASE 2 — CHECKOUT TEST ON {len(raw_store_urls)} STORES", "SUCCESS")
+        log(f"🚀 PHASE 2 — CHECKING CHECKOUT & PAYMENT GATEWAY", "SUCCESS")
         log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
+        # 2. এবার ডাটাবেস থেকে একটা একটা করে স্টোর চেক করবে
         for idx, url in enumerate(raw_store_urls):
             if not automation_running: break
             if total_leads >= min_leads: break
@@ -430,22 +373,34 @@ def _run():
 
                 if not result.get("is_lead"):
                     reason = result.get('reason', '')
-                    if "Keyword" in reason: continue
+                    
+                    # যদি কিওয়ার্ড না থাকে, তাহলে টার্মিনালে স্প্যাম করবে না (যাতে লগ ক্লিন থাকে)
+                    if "Keyword" in reason:
+                        continue
+                        
                     if any(w in reason.lower() for w in ['has payment', 'visa', 'stripe', 'paypal']):
                         rej_pay += 1
                     else:
                         rej_other += 1
+                    
+                    # টার্মিনালে দেখাবে কেন রিজেক্ট হলো
                     log(f"   [{idx+1}/{len(raw_store_urls)}] 🚫 SKIP ({reason}) — {url}", "WARN")
                     time.sleep(0.5)
                     continue
 
-                log(f"   [{idx+1}/{len(raw_store_urls)}] 🎯 MATCH: {result.get('reason')} — collecting info...", "SUCCESS")
+                # ✅ LEAD FOUND!
+                log(f"   [{idx+1}/{len(raw_store_urls)}] 🎯 100% MATCH: {result.get('reason')} — collecting info...", "SUCCESS")
+                
+                # 3. কন্টাক্ট পেজ থেকে ইমেইল ও নাম্বার নিবে
                 info = get_store_info(url, session)
+                
+                # 4. গুগল শিটে লিড সেভ করবে
                 save_resp = call_sheet({
                     'action': 'save_lead', 'store_name': info['store_name'],
                     'url': url, 'email': info['email'] or '',
                     'phone': info['phone'] or '', 'country': country, 'keyword': keyword
                 })
+                
                 if save_resp.get('error'):
                     log(f"   Sheet error: {save_resp['error']}", "WARN"); continue
                 if save_resp.get('status') == 'duplicate':
@@ -454,14 +409,14 @@ def _run():
                 total_leads += 1; kw_leads += 1
                 email_str = f"📧 {info['email']}" if info['email'] else "⚠ no email"
                 phone_str = f"| 📞 {info['phone']}" if info['phone'] else ""
-                log(f"   ✅ LEAD #{total_leads} → {info['store_name']} | {email_str} {phone_str}", "SUCCESS")
+                log(f"   ✅ LEAD #{total_leads} SAVED → {info['store_name']} | {email_str} {phone_str}", "SUCCESS")
                 time.sleep(random.uniform(1.5, 3))
 
             except Exception as e:
                 continue
 
         call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': kw_leads})
-        log(f"✅ '{keyword}' done → {kw_leads} leads | paid:{rej_pay} other:{rej_other}", "SUCCESS")
+        log(f"✅ '{keyword}' done → {kw_leads} leads found", "SUCCESS")
 
     log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
     log(f"📊 Scraping done! Total leads: {total_leads}", "SUCCESS")
@@ -502,7 +457,7 @@ def _run():
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
 
-# ── Flask routes (same as before) ─────────────────────────────────────────────
+# ── Flask routes ──────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
     return render_template('index.html')
