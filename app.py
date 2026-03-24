@@ -54,7 +54,6 @@ MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.c
 def source_crtsh():
     """
     crt.sh থেকে একদম নতুন তৈরি হওয়া (Brand New) ৩০০০-৫০০০ স্টোর কালেক্ট করবে।
-    টাইমআউট এড়ানোর জন্য deduplicate বাদ দেওয়া হয়েছে।
     """
     urls = set()
     log(f"   [crt.sh] Fetching massive list of BRAND NEW stores (Last 7 Days)...", "INFO")
@@ -82,7 +81,6 @@ def source_search_recent(keyword):
     log(f"   [Search] Finding niche '{keyword}' stores indexed in the last 7 days...", "INFO")
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        # df=w means past week filter
         data = f'q=site:myshopify.com "{keyword}"&df=w'
         r = requests.post("https://lite.duckduckgo.com/lite/", headers=headers, data=data, timeout=15)
         for m in MYSHOPIFY_RE.findall(r.text):
@@ -110,12 +108,8 @@ def source_urlscan_recent(keyword):
 
 def find_shopify_stores(keyword, country):
     all_urls = set()
-    
-    # ১. গত ৭ দিনের সার্চ ইঞ্জিন ডাটা
     all_urls.update(source_search_recent(keyword))
-    # ২. গত ৭ দিনের স্ক্যান ডাটা
     all_urls.update(source_urlscan_recent(keyword))
-    # ৩. একদম নতুন তৈরি হওয়া হাজার হাজার স্টোর (crt.sh)
     all_urls.update(source_crtsh())
 
     total = list(all_urls)
@@ -130,14 +124,16 @@ def check_store_target(base_url, session, keyword):
     ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
     headers = {'User-Agent': ua, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9'}
     try:
-        r = session.get(base_url, headers=headers, timeout=10, allow_redirects=True)
+        # Fast Niche Check (Timeout 5s for speed)
+        r = session.get(base_url, headers=headers, timeout=5, allow_redirects=True)
         if r.status_code != 200:
             return {"is_shopify": False, "is_lead": False}
+            
         html_lower = r.text.lower()
         if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
             return {"is_shopify": False, "is_lead": False}
 
-        # 🚨 NICHE CHECK: হোমপেজে কিওয়ার্ড না থাকলে স্কিপ করবে (যেহেতু crt.sh থেকে সব নিশের স্টোর আসছে)
+        # 🚨 NICHE CHECK: হোমপেজে কিওয়ার্ড না থাকলে স্কিপ করবে
         kw_lower = keyword.lower().strip()
         if kw_lower and kw_lower not in html_lower:
             return {"is_shopify": True, "is_lead": False, "reason": "Keyword missing"}
@@ -152,7 +148,7 @@ def check_store_target(base_url, session, keyword):
             products = prod_req.json().get('products', [])
 
             if not products:
-                chk = session.get(f"{base_url}/checkout", headers=headers, timeout=12, allow_redirects=True)
+                chk = session.get(f"{base_url}/checkout", headers=headers, timeout=10, allow_redirects=True)
                 chk_lower = chk.text.lower()
                 for phrase in ["isn't accepting payments", "not accepting payments",
                                 "no payment methods", "payment provider hasn't been set up",
@@ -366,7 +362,9 @@ def _run():
         keyword  = kw_row.get('keyword', '')
         country  = kw_row.get('country', '')
         kw_id    = kw_row.get('id', '')
-        kw_leads = rej_pay = rej_other = 0
+        
+        # কাউন্টারগুলো সেট করা হলো
+        kw_leads = rej_pay = rej_other = rej_keyword = 0
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
@@ -385,25 +383,25 @@ def _run():
             if total_leads >= min_leads: break
 
             try:
-                # এখানে কিওয়ার্ড পাস করা হয়েছে যাতে হোমপেজে কিওয়ার্ড না থাকলে স্কিপ করে
                 result = check_store_target(url, session, keyword)
-                if not result.get("is_shopify"): continue
+                if not result.get("is_shopify"): 
+                    continue
 
                 if not result.get("is_lead"):
                     reason = result.get('reason', '')
                     
-                    # যদি কিওয়ার্ড না থাকে, তাহলে টার্মিনালে স্প্যাম করবে না (যাতে লগ ক্লিন থাকে)
+                    # কাউন্টার আপডেট করা হচ্ছে
                     if "Keyword missing" in reason:
-                        continue
-
-                    if any(w in reason.lower() for w in ['has:', 'payment', 'visa', 'stripe']):
+                        rej_keyword += 1
+                    elif any(w in reason.lower() for w in ['has:', 'payment', 'visa', 'stripe']):
                         rej_pay += 1
                     else:
                         rej_other += 1
                         
-                    # লগ স্প্যাম এড়াতে প্রতি ২০টি পর পর লগ দেখাবে
-                    if (rej_pay + rej_other) % 20 == 0:
-                        log(f"   Progress: Checked {rej_pay + rej_other} niche stores | Leads: {kw_leads} | Paid: {rej_pay}", "INFO")
+                    # 🚨 ফিক্স: এখন প্রতি ১০টি স্টোর চেক করার পর আপনাকে আপডেট দেখাবে
+                    processed_count = idx + 1
+                    if processed_count % 10 == 0:
+                        log(f"   ⚡ Progress: [{processed_count}/{len(store_urls)}] Checked | Niche Mismatch: {rej_keyword} | Paid: {rej_pay}", "INFO")
                     continue
 
                 # ✅ LEAD FOUND!
