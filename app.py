@@ -21,7 +21,7 @@ automation_thread = None
 scheduler = BackgroundScheduler()
 scheduler.start()
 
-# ── Apps Script communication (CRASH PROTECTION ADDED) ────────────────────────
+# ── Apps Script communication (CRASH PROTECTION) ──────────────────────────────
 def call_sheet(payload):
     script_url = os.environ.get('APPS_SCRIPT_URL', '')
     if not script_url:
@@ -56,42 +56,59 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-# ── 1. NICHE & NEW STORE SCRAPING ─────────────────────────────────────────────
+# ── 1. MASSIVE NICHE & NEW STORE SCRAPING ─────────────────────────────────────
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 def find_shopify_stores(keyword, country, serpapi_key):
     """
-    আপনার Niche অনুযায়ী একদম নতুন (গত ৭ দিন ও ১ মাস) স্টোরগুলো খুঁজে বের করবে।
+    URLScan এবং SerpAPI (Pagination সহ) ব্যবহার করে প্রচুর স্টোর বের করবে।
     """
     all_urls = set()
+    kw_clean = keyword.lower().replace(' ', '')
     
-    log(f"🔍 Searching for NEW '{keyword}' stores (Past Week & Past Month)...", "INFO")
+    log(f"🔍 Searching for NEW '{keyword}' stores (Massive Volume Mode)...", "INFO")
     
+    # SOURCE 1: URLScan.io (Recently created/scanned stores)
+    try:
+        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=300&sort=time"
+        r = requests.get(urlscan_url, timeout=10)
+        if r.status_code == 200:
+            for result in r.json().get('results', []):
+                page_url = result.get('page', {}).get('url', '')
+                m = MYSHOPIFY_RE.search(page_url)
+                if m:
+                    all_urls.add(f"https://{m.group(1)}.myshopify.com")
+    except Exception as e:
+        pass
+
+    # SOURCE 2: SerpAPI with Pagination (Deep Search)
     queries = [
         f'site:myshopify.com "{keyword}" {country}',
         f'site:myshopify.com "{keyword}" "powered by shopify"',
-        f'site:myshopify.com "{keyword}" "opening soon"',
-        f'site:myshopify.com intitle:"{keyword}"'
+        f'site:myshopify.com intitle:"{keyword}"',
+        f'site:myshopify.com "{keyword}" "opening soon"'
     ]
     
-    # Time filters: qdr:w (Past Week) for ultra-fresh, qdr:m (Past Month) for volume
-    time_filters = ['qdr:w', 'qdr:m']
-    
-    for tbs in time_filters:
-        for q in queries:
-            if len(all_urls) > 200: # ২০০টা পেলেই চেক করা শুরু করবে যাতে ফাস্ট হয়
-                break
+    for q in queries:
+        if len(all_urls) > 500: # লিমিট বাড়িয়ে ৫০০ করা হয়েছে
+            break
+        # Pagination: 0, 100, 200 (গুগলের ৩টা পেজ পর্যন্ত খুঁজবে)
+        for start_page in [0, 100, 200]:
             try:
                 params = {
                     'api_key': serpapi_key,
                     'engine': 'google',
                     'q': q,
                     'num': 100,
-                    'tbs': tbs
+                    'start': start_page,
+                    'tbs': 'qdr:m' # Past Month
                 }
                 res = requests.get('https://serpapi.com/search', params=params, timeout=15)
                 if res.status_code == 200:
-                    for item in res.json().get('organic_results', []):
+                    results = res.json().get('organic_results', [])
+                    if not results:
+                        break # এই পেজে রেজাল্ট না থাকলে পরের পেজে যাবে না
+                    for item in results:
                         m = MYSHOPIFY_RE.match(item.get('link', ''))
                         if m:
                             all_urls.add(f"https://{m.group(1)}.myshopify.com")
@@ -104,7 +121,7 @@ def find_shopify_stores(keyword, country, serpapi_key):
     log(f"📦 Found {len(urls_list)} NEW Niche stores to test!", "INFO")
     return urls_list
 
-# ── 2. HTML ANALYSIS CHECKOUT TEST (Your Exact Logic) ─────────────────────────
+# ── 2. HTML ANALYSIS CHECKOUT TEST (100% Accurate) ────────────────────────────
 def check_store_target(base_url, session):
     """
     ১. Cart এ প্রোডাক্ট অ্যাড করে Checkout পেজে যাবে।
@@ -158,14 +175,11 @@ def check_store_target(base_url, session):
                         'shop pay', 'apple pay', 'google pay', 'discover', 'diners club'
                     ]
                     
-                    # HTML কোডের ভেতর খুঁজবে এই নামগুলো আছে কিনা
                     found_payments = [pk for pk in payment_keywords if pk in chk_html]
                     
                     if found_payments:
-                        # যদি কোনো পেমেন্ট মেথড পাওয়া যায়, তাহলে রিজেক্ট!
                         return {"is_shopify": True, "is_lead": False, "reason": f"Active Checkout ('{found_payments[0]}' found in HTML)"}
                     else:
-                        # ✅ যদি HTML এ কোনো পেমেন্ট মেথড না পাওয়া যায়, তারমানে পেমেন্ট নাই! (LEAD ACCEPTED)
                         return {"is_shopify": True, "is_lead": True, "reason": "100% Verified: No Payment Methods found in HTML!"}
                     
             return {"is_shopify": True, "is_lead": False, "reason": "Could not test checkout (No products)"}
@@ -176,7 +190,7 @@ def check_store_target(base_url, session):
     except Exception as e:
         return {"is_shopify": False, "is_lead": False}
 
-# ── Store info extraction ─────────────────────────────────────────────────────
+# ── Store info extraction (DEEP EMAIL FINDER) ─────────────────────────────────
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 SKIP_EMAIL_DOMAINS =['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg', '.svg', 'noreply', 'domain.com']
 PHONE_RE = re.compile(r'(\+\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4})')
@@ -219,7 +233,12 @@ def get_store_info(base_url, session):
         result['phone'] = extract_phone(html)
         
         if not result['email']:
-            for path in['/pages/contact', '/contact', '/pages/about-us']:
+            # 🔥 DEEP EMAIL FINDER: Checking Policy Pages where emails are legally required
+            paths_to_check = [
+                '/pages/contact', '/contact', '/pages/about-us', '/pages/contact-us',
+                '/policies/contact-information', '/policies/refund-policy', '/policies/terms-of-service'
+            ]
+            for path in paths_to_check:
                 try:
                     pr = session.get(base_url + path, headers=headers, timeout=8)
                     if pr.status_code == 200:
