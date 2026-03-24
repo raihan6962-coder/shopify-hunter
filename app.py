@@ -48,41 +48,68 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: MASSIVE SSL SCRAPING (5000+ STORES)
+# PHASE 1: MASSIVE DATABASE SCRAPING (5 High-Speed APIs)
 # ─────────────────────────────────────────────────────────────────────────────
-def scrape_all_ssl_stores():
+def scrape_massive_store_list():
     """
-    কোনো কিওয়ার্ড ছাড়াই crt.sh থেকে লেটেস্ট ৫০০০+ শপিফাই স্টোর স্ক্র্যাপ করবে।
+    ৫টি সুপার-ফাস্ট API ব্যবহার করে কয়েক সেকেন্ডের মধ্যে ৩০০০-৫০০০+ স্টোর কালেক্ট করবে।
+    crt.sh এর মতো স্লো ডাটাবেসের ওপর নির্ভর করবে না।
     """
     urls = set()
-    log(f"   [SSL Database] Fetching 5000+ newly created Shopify stores...", "INFO")
-    
-    for attempt in range(3):
-        try:
-            # Broad query to get ALL recent myshopify certs
-            r = requests.get(
-                "https://crt.sh/",
-                params={'q': '%.myshopify.com', 'output': 'json', 'deduplicate': 'Y'},
-                timeout=45,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
-            if r.status_code == 200:
-                certs = r.json()
-                log(f"   crt.sh: {len(certs)} total myshopify certs found!", "INFO")
-                for cert in certs:
-                    name = cert.get('common_name', '') or cert.get('name_value', '')
-                    for n in name.split('\n'):
-                        m = MYSHOPIFY_RE.search(n)
-                        if m:
-                            urls.add(f"https://{m.group(1)}.myshopify.com")
-                break # Success, exit retry loop
-        except Exception as e:
-            log(f"   crt.sh timeout/error (Attempt {attempt+1}/3). Retrying...", "WARN")
-            time.sleep(3)
+    log(f"   [Database] Fetching thousands of Shopify stores from CyberSec APIs...", "INFO")
+
+    # 1. URLScan (Fast, recent 2000 stores)
+    try:
+        r = requests.get("https://urlscan.io/api/v1/search/?q=domain:myshopify.com&size=2000&sort=time", timeout=15)
+        if r.status_code == 200:
+            for res in r.json().get('results', []):
+                m = MYSHOPIFY_RE.search(res.get('page', {}).get('url', ''))
+                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+    except: pass
+
+    # 2. AlienVault OTX (Passive DNS - Huge database)
+    try:
+        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
+        if r.status_code == 200:
+            for entry in r.json().get('passive_dns', []):
+                h = entry.get('hostname', '').lower()
+                if h.endswith('.myshopify.com') and '*' not in h:
+                    urls.add(f"https://{h}")
+    except: pass
+
+    # 3. Anubis (Super fast subdomain scanner)
+    try:
+        r = requests.get("https://jldc.me/anubis/subdomains/myshopify.com", timeout=15)
+        if r.status_code == 200:
+            for h in r.json():
+                h = str(h).lower()
+                if h.endswith('.myshopify.com') and '*' not in h:
+                    urls.add(f"https://{h}")
+    except: pass
+
+    # 4. HackerTarget (Hacker Directory)
+    try:
+        r = requests.get("https://api.hackertarget.com/hostsearch/?q=myshopify.com", timeout=15)
+        if r.status_code == 200:
+            for line in r.text.split('\n'):
+                h = line.split(',')[0].lower()
+                if h.endswith('.myshopify.com') and '*' not in h:
+                    urls.add(f"https://{h}")
+    except: pass
+
+    # 5. CertSpotter (Fast SSL Database)
+    try:
+        r = requests.get('https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', timeout=15)
+        if r.status_code == 200:
+            for cert in r.json():
+                for name in cert.get('dns_names', []):
+                    if name.endswith('.myshopify.com'):
+                        urls.add(f"https://{name}")
+    except: pass
 
     urls_list = list(urls)
     random.shuffle(urls_list)
-    log(f"   ✅ SSL Scraping Complete! {len(urls_list)} new stores collected in database.", "SUCCESS")
+    log(f"   ✅ Database Scraping Complete! {len(urls_list)} raw stores collected.", "SUCCESS")
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -320,11 +347,11 @@ def _run():
     log("🚀 PHASE 1 — SCRAPING ALL NEW STORES TO DATABASE", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
-    # 1. প্রথমে সব স্টোর স্ক্র্যাপ করে মেমোরিতে ডাটাবেস বানাবে (৫০০০+ স্টোর)
-    raw_store_urls = scrape_all_ssl_stores()
+    # 1. প্রথমে ৫টি API থেকে সব স্টোর স্ক্র্যাপ করে মেমোরিতে ডাটাবেস বানাবে (৩০০০-৫০০০+ স্টোর)
+    raw_store_urls = scrape_massive_store_list()
 
     if not raw_store_urls:
-        log("⚠️  No URLs found from SSL. Exiting...", "WARN")
+        log("⚠️  No URLs found from APIs. Exiting...", "WARN")
         return
 
     for kw_row in ready_kws:
