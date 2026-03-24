@@ -7,13 +7,12 @@ import re
 import random
 import requests
 from bs4 import BeautifulSoup
+from groq import Groq
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import logging
 import os
-
-# 🔥 THE PYTHON PACKAGE (No API Key Needed)
-from duckduckgo_search import DDGS
+from urllib.parse import quote_plus, unquote
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
@@ -32,20 +31,15 @@ def call_sheet(payload):
     
     for attempt in range(3):
         try:
-            r = requests.post(script_url, json=payload, timeout=30,
+            r = requests.post(script_url, json=payload, timeout=45,
                               headers={'Content-Type': 'application/json'})
-            try:
-                return r.json()
-            except Exception:
-                log(f"Sheet API warning: Non-JSON response. Retrying...", "WARN")
-                time.sleep(2)
-                continue
+            return r.json()
         except requests.exceptions.Timeout:
             log(f"Sheet API timeout (Attempt {attempt+1}/3). Retrying...", "WARN")
-            time.sleep(2)
+            time.sleep(3)
         except Exception as e:
             log(f"Sheet API error (Attempt {attempt+1}/3): {e}", "WARN")
-            time.sleep(2)
+            time.sleep(3)
             
     return {'error': 'Sheet API failed after 3 retries'}
 
@@ -59,68 +53,106 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-# ── 1. PURE PYTHON SCRAPING (NO SERPAPI, NO LIMITS) ───────────────────────────
+# ── 1. SCRAPING (NO APIs) ────────────────────────────────────────────────────
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
-def find_shopify_stores_python(keyword, country):
+def find_shopify_stores(keyword, country, serpapi_key=None):  # serpapi_key ignored
     """
-    SerpAPI পুরোপুরি বাদ! 
-    Python এর নিজস্ব প্যাকেজ (DDGS) দিয়ে আনলিমিটেড স্টোর স্ক্র্যাপ করবে।
+    Scrape Google search results for site:myshopify.com "keyword"
+    with time filter (past week). Returns a list of Shopify store URLs.
     """
     all_urls = set()
     kw_clean = keyword.lower().replace(' ', '')
-    
-    log(f"🚀 PURE PYTHON MODE: Scraping web directly for '{keyword}' (No API Limits)...", "INFO")
 
-    # SOURCE 1: DuckDuckGo Python Package (Unlimited Free Scraping)
-    log(f"🔍 [Python Scraper] Extracting stores from search engine...", "INFO")
-    queries = [
-        f'site:myshopify.com "{keyword}" {country}',
-        f'site:myshopify.com "{keyword}" "powered by shopify"',
-        f'site:myshopify.com intitle:"{keyword}"',
-        f'site:myshopify.com "{keyword}" "opening soon"',
-        f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"'
+    # Build query
+    query = f'site:myshopify.com "{keyword}"'
+    if country and country != "All":
+        query += f" {country}"
+    encoded_query = quote_plus(query)
+
+    # Google search URL with time filter (past week: qdr:w)
+    url = f"https://www.google.com/search?q={encoded_query}&tbs=qdr:w"
+
+    # Rotating user agents
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     ]
-    
+
+    headers = {
+        'User-Agent': random.choice(user_agents),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    }
+
     try:
-        with DDGS() as ddgs:
-            for q in queries:
-                if len(all_urls) > 500:
-                    break
-                log(f"   Scraping query: {q}", "INFO")
-                # max_results=200 মানে প্রতি কোয়েরিতে ২০০টা করে ওয়েবসাইট আনবে
-                results = ddgs.text(q, max_results=200)
-                if results:
-                    for r in results:
-                        link = r.get('href', '')
-                        m = MYSHOPIFY_RE.search(link)
-                        if m:
-                            all_urls.add(f"https://{m.group(1)}.myshopify.com")
-                time.sleep(2) # Anti-ban delay
+        log(f"🔍 Scraping Google for: {query}", "INFO")
+        resp = requests.get(url, headers=headers, timeout=15)
+
+        if resp.status_code != 200:
+            log(f"   Google returned {resp.status_code}", "WARN")
+            return []
+
+        soup = BeautifulSoup(resp.text, 'html.parser')
+
+        # Find all links that contain a myshopify.com URL
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            # Google often wraps results in /url?q=...
+            if href.startswith('/url?q='):
+                real_url = href.split('/url?q=')[1].split('&')[0]
+                real_url = unquote(real_url)
+                match = MYSHOPIFY_RE.search(real_url)
+                if match:
+                    all_urls.add(f"https://{match.group(1)}.myshopify.com")
+            else:
+                # Direct link
+                match = MYSHOPIFY_RE.search(href)
+                if match:
+                    all_urls.add(f"https://{match.group(1)}.myshopify.com")
+
+        # Try to go to the next page if we got few results
+        if len(all_urls) < 30:
+            next_button = soup.find('a', {'aria-label': 'Next page'})
+            if next_button and next_button.get('href'):
+                next_url = "https://www.google.com" + next_button['href']
+                time.sleep(random.uniform(2, 4))
+                next_resp = requests.get(next_url, headers=headers, timeout=15)
+                if next_resp.status_code == 200:
+                    next_soup = BeautifulSoup(next_resp.text, 'html.parser')
+                    for a in next_soup.find_all('a', href=True):
+                        href = a['href']
+                        if href.startswith('/url?q='):
+                            real_url = href.split('/url?q=')[1].split('&')[0]
+                            real_url = unquote(real_url)
+                            match = MYSHOPIFY_RE.search(real_url)
+                            if match:
+                                all_urls.add(f"https://{match.group(1)}.myshopify.com")
+                        else:
+                            match = MYSHOPIFY_RE.search(href)
+                            if match:
+                                all_urls.add(f"https://{match.group(1)}.myshopify.com")
+
+        log(f"📦 Found {len(all_urls)} fresh stores from Google", "INFO")
+        return list(all_urls)
+
     except Exception as e:
-        log(f"   Python Scraper Error: {e}", "WARN")
+        log(f"   Google scraping error: {e}", "WARN")
+        return []
 
-    # SOURCE 2: Direct URLScan API (Free Public API, No Key Needed)
-    log(f"🔍 [Public API] Fetching recently created stores...", "INFO")
-    try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=300&sort=time"
-        r = requests.get(urlscan_url, timeout=15)
-        if r.status_code == 200:
-            for result in r.json().get('results', []):
-                page_url = result.get('page', {}).get('url', '')
-                m = MYSHOPIFY_RE.search(page_url)
-                if m:
-                    all_urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception as e:
-        pass
-
-    urls_list = list(all_urls)
-    random.shuffle(urls_list)
-    log(f"📦 Successfully scraped {len(urls_list)} stores using Python!", "INFO")
-    return urls_list
-
-# ── 2. HTML ANALYSIS CHECKOUT TEST (100% Accurate) ────────────────────────────
+# ── 2. STRICT CHECKOUT TEST (No Password Pages, Only No-Payment) ──────────────
 def check_store_target(base_url, session):
+    """
+    ১. Password Page থাকলে সোজা রিজেক্ট করবে।
+    ২. Cart এ প্রোডাক্ট অ্যাড করে Checkout পেজে যাবে।
+    ৩. Checkout পেজে visa/paypal থাকলে রিজেক্ট করবে।
+    ৪. যদি কোনো পেমেন্ট মেথড না পায়, তাহলেই লিড হিসেবে নিবে!
+    """
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
     headers = {
@@ -138,9 +170,9 @@ def check_store_target(base_url, session):
         if 'shopify' not in html and 'cdn.shopify.com' not in html:
             return {"is_shopify": False, "is_lead": False}
             
-        # 🚨 REJECT PASSWORD PROTECTED STORES
+        # 🚨 STRICT RULE: REJECT PASSWORD PROTECTED STORES
         if '/password' in r.url or 'password-page' in html or 'opening soon' in html:
-            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping)"}
+            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping as requested)"}
 
         # The Checkout Test (Add to cart -> Checkout)
         try:
@@ -157,24 +189,29 @@ def check_store_target(base_url, session):
                     chk_req = session.get(f"{base_url}/checkout", headers=headers, timeout=15)
                     chk_html = chk_req.text.lower()
                     
+                    # নিশ্চিত হওয়া যে আমরা আসলেই চেকআউট পেজে আছি
                     if 'checkout' not in chk_html and 'contact information' not in chk_html and "isn't accepting payments" not in chk_html:
                         return {"is_shopify": True, "is_lead": False, "reason": "Could not reach valid checkout page"}
 
-                    # 🔥 HTML ANALYSIS FOR PAYMENT METHODS 🔥
-                    payment_keywords = [
+                    # 🚨 CHECK FOR PAYMENT KEYWORDS
+                    payment_keywords =[
                         'visa', 'mastercard', 'amex', 'paypal', 'credit card', 
-                        'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 
-                        'shop pay', 'apple pay', 'google pay', 'discover', 'diners club'
+                        'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 'shop pay', 'apple pay', 'google pay'
                     ]
                     
-                    found_payments = [pk for pk in payment_keywords if pk in chk_html]
+                    # যদি পেমেন্ট গেটওয়ের নাম থাকে, তাহলে রিজেক্ট
+                    for pk in payment_keywords:
+                        if pk in chk_html:
+                            return {"is_shopify": True, "is_lead": False, "reason": f"Active Checkout ('{pk}' found)"}
                     
-                    if found_payments:
-                        return {"is_shopify": True, "is_lead": False, "reason": f"Active Checkout ('{found_payments[0]}' found in HTML)"}
-                    else:
-                        return {"is_shopify": True, "is_lead": True, "reason": "100% Verified: No Payment Methods found in HTML!"}
+                    # ✅ যদি চেকআউট পেজে আসে এবং কোনো পেমেন্ট গেটওয়ের নাম না থাকে, তারমানে পেমেন্ট নাই! (LEAD ACCEPTED)
+                    if "isn't accepting payments" in chk_html or "not accepting payments" in chk_html:
+                        return {"is_shopify": True, "is_lead": True, "reason": "Live Store -> Checkout Disabled (Explicit Error)!"}
                     
-            return {"is_shopify": True, "is_lead": False, "reason": "Could not test checkout (No products)"}
+                    # Explicit error না পেলেও যদি পেমেন্ট কিওয়ার্ড না থাকে, তবে লিড হিসেবে নিবে।
+                    return {"is_shopify": True, "is_lead": True, "reason": "No Payment Options Found on Checkout!"}
+                    
+            return {"is_shopify": True, "is_lead": False, "reason": "Could not test checkout (No products to add)"}
             
         except Exception as e:
             return {"is_shopify": True, "is_lead": False, "reason": "Checkout test failed"}
@@ -225,11 +262,7 @@ def get_store_info(base_url, session):
         result['phone'] = extract_phone(html)
         
         if not result['email']:
-            paths_to_check = [
-                '/pages/contact', '/contact', '/pages/about-us', '/pages/contact-us',
-                '/policies/contact-information', '/policies/refund-policy', '/policies/terms-of-service'
-            ]
-            for path in paths_to_check:
+            for path in['/pages/contact', '/contact', '/pages/about-us']:
                 try:
                     pr = session.get(base_url + path, headers=headers, timeout=8)
                     if pr.status_code == 200:
@@ -243,12 +276,13 @@ def get_store_info(base_url, session):
                 except:
                     continue
     except Exception as e:
-        pass
+        log(f"Info extraction error: {e}", "WARN")
     return result
 
 # ── AI Email generation ───────────────────────────────────────────────────────
 def generate_email(tpl_subject, tpl_body, lead, groq_key):
     try:
+        client = Groq(api_key=groq_key)
         prompt = f"""You are writing a short cold email to a Shopify store owner.
 
 Store: {lead.get('store_name', 'the store')}
@@ -262,37 +296,26 @@ Body: {tpl_body}
 
 Rules:
 - 80-100 words MAX
-- Zero spam trigger words
-- Mention store name once
+- Zero spam trigger words (FREE, GUARANTEED, ACT NOW, etc.)
+- Mention store name once, naturally
+- Helpful tone, not pushy
 - End with ONE soft question
-- CRITICAL: Do NOT use newline characters (\\n). Use <br> for line breaks.
-- Respond ONLY with valid JSON.
+- Use HTML <p> tags
 
-{{"subject": "...", "body": "..."}}"""
+Respond ONLY with valid JSON, nothing else:
+{{"subject": "...", "body": "<p>...</p><p>...</p>"}}"""
 
-        headers = {
-            "Authorization": f"Bearer {groq_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": "llama-3.1-8b-instant",
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 500,
-            "temperature": 0.7
-        }
-        
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=20)
-        
-        if r.status_code == 200:
-            raw = r.json()['choices'][0]['message']['content']
-            raw = re.sub(r'```(?:json)?|```', '', raw.strip()).strip()
-            raw = raw.replace('\n', ' ').replace('\r', '')
-            data = json.loads(raw, strict=False)
-            return data.get('subject', tpl_subject), data.get('body', f'<p>{tpl_body}</p>')
-        else:
-            return tpl_subject, f'<p>{tpl_body}</p>'
-            
+        resp = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=500,
+            temperature=0.7
+        )
+        raw = re.sub(r'```(?:json)?|```', '', resp.choices[0].message.content.strip()).strip()
+        data = json.loads(raw)
+        return data.get('subject', tpl_subject), data.get('body', f'<p>{tpl_body}</p>')
     except Exception as e:
+        log(f"Groq error ({e}) — using template", "WARN")
         return tpl_subject, f'<p>{tpl_body}</p>'
 
 # ── Main automation ───────────────────────────────────────────────────────────
@@ -318,15 +341,20 @@ def _run():
 
     if cfg_resp.get('error'):
         log(f"❌ Cannot reach Apps Script: {cfg_resp['error']}", "ERROR")
+        log("👉 Make sure APPS_SCRIPT_URL is set in Render → Environment", "ERROR")
         return
 
     cfg = cfg_resp.get('config', {})
     groq_key    = cfg.get('groq_api_key', '').strip()
+    serpapi_key = cfg.get('serpapi_key', '').strip()  # kept but not used now
     min_leads   = int(cfg.get('min_leads', 50) or 50)
 
     if not groq_key:
         log("❌ Groq API Key missing — go to CFG screen → save", "ERROR")
         return
+    # serpapi_key is no longer required, but we keep the check for compatibility
+    if not serpapi_key:
+        log("⚠️ SerpAPI Key missing — we now use direct scraping, but you can keep it in sheet.", "WARN")
 
     log(f"✅ Config loaded | Target: {min_leads} leads", "INFO")
 
@@ -353,7 +381,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — PURE PYTHON SCRAPING & HTML CHECKOUT ANALYSIS", "SUCCESS")
+    log("🚀 PHASE 1 — FINDING FRESH STORES & CHECKING CHECKOUT", "SUCCESS")
     log(f"🎯 Target: {min_leads} leads from {len(ready_kws)} keywords", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
@@ -371,12 +399,12 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
+        # Search for stores using pure scraping (no APIs)
         try:
-            # 🔥 USING THE NEW PYTHON SCRAPER (NO SERPAPI)
-            store_urls = find_shopify_stores_python(keyword, country)
+            store_urls = find_shopify_stores(keyword, country, serpapi_key)  # serpapi_key passed but ignored
         except Exception as e:
             log(f"Search failed: {e}", "WARN")
-            store_urls =[]
+            store_urls = []
 
         if not store_urls:
             log("⚠️  No URLs found for this keyword. Moving to next...", "WARN")
@@ -392,21 +420,24 @@ def _run():
                 break
 
             try:
+                # Step 1 & 2: Verify Shopify & Check Checkout Page
                 target_info = check_store_target(url, session)
 
                 if not target_info.get("is_shopify"):
-                    continue 
+                    continue # Silent skip for non-shopify
 
                 if not target_info.get("is_lead"):
                     log(f"   🚫 REJECTED: {target_info.get('reason')} - {url}", "WARN")
                     time.sleep(0.5)
                     continue
 
-                # ✅ 100% VERIFIED NO PAYMENT FOUND IN HTML!
-                log(f"   🎯 {target_info.get('reason')} — collecting info...", "SUCCESS")
+                # ✅ NO payment found on Checkout!
+                log(f"   🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
 
+                # Step 3: Extract contact info
                 info = get_store_info(url, session)
 
+                # Step 4: Save to Google Sheet
                 save_resp = call_sheet({
                     'action': 'save_lead',
                     'store_name': info['store_name'],
@@ -416,10 +447,6 @@ def _run():
                     'country': country,
                     'keyword': keyword
                 })
-
-                if save_resp.get('error'):
-                    log(f"   ⚠️ Could not save to sheet: {save_resp.get('error')}", "WARN")
-                    continue
 
                 if save_resp.get('status') == 'duplicate':
                     log(f"   ⏭️  Duplicate — already collected", "INFO")
@@ -434,8 +461,12 @@ def _run():
             except Exception as e:
                 continue
 
+        # Mark keyword as used
         call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': kw_leads})
         log(f"✅ '{keyword}' done → {kw_leads} leads found", "SUCCESS")
+
+        # Wait before next keyword to avoid Google blocking
+        time.sleep(random.uniform(20, 40))
 
     # ── Phase 2: Email outreach ───────────────────────────────────────────────
     log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
@@ -443,18 +474,10 @@ def _run():
     log("📧 PHASE 2 — EMAIL OUTREACH STARTING", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
-    log("⏳ Waiting 10 seconds for Google Sheets to sync data...", "INFO")
-    time.sleep(10)
-
-    leads_resp = call_sheet({'action': 'get_leads', 't': time.time()})
-    
-    if leads_resp.get('error'):
-        log("⚠️ Could not load leads for emailing due to Sheet error.", "WARN")
-        all_leads = []
-    else:
-        all_leads = leads_resp.get('leads', [])
-        
-    pending = [l for l in all_leads if l.get('email') and '@' in l['email'] and l.get('email_sent') != 'sent']
+    leads_resp = call_sheet({'action': 'get_leads'})
+    all_leads  = leads_resp.get('leads', [])
+    pending    =[l for l in all_leads
+                  if l.get('email') and '@' in l['email'] and l.get('email_sent') != 'sent']
 
     log(f"📨 {len(pending)} leads with email addresses to contact", "INFO")
 
@@ -504,16 +527,13 @@ def api_status():
     if script_url:
         try:
             lr = call_sheet({'action': 'get_leads'})
-            if not lr.get('error'):
-                leads = lr.get('leads',[])
-                total_leads = len(leads)
-                emails_sent = sum(1 for l in leads if l.get('email_sent') == 'sent')
-            
+            leads = lr.get('leads',[])
+            total_leads = len(leads)
+            emails_sent = sum(1 for l in leads if l.get('email_sent') == 'sent')
             kr = call_sheet({'action': 'get_keywords'})
-            if not kr.get('error'):
-                kws = kr.get('keywords',[])
-                kw_total = len(kws)
-                kw_used  = sum(1 for k in kws if k.get('status') == 'used')
+            kws = kr.get('keywords',[])
+            kw_total = len(kws)
+            kw_used  = sum(1 for k in kws if k.get('status') == 'used')
         except:
             pass
     return jsonify({
