@@ -21,7 +21,7 @@ automation_thread = None
 scheduler = BackgroundScheduler()
 scheduler.start()
 
-# ── Apps Script communication (CRASH PROTECTION) ──────────────────────────────
+# ── Apps Script communication ─────────────────────────────────────────────────
 def call_sheet(payload):
     script_url = os.environ.get('APPS_SCRIPT_URL', '')
     if not script_url:
@@ -56,22 +56,23 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-# ── 1. MASSIVE NICHE & NEW STORE SCRAPING ─────────────────────────────────────
+# ── 1. MASSIVE DIRECTORY SCRAPING (NO GOOGLE) ─────────────────────────────────
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
-def find_shopify_stores(keyword, country, serpapi_key):
+def find_shopify_stores(keyword):
     """
-    URLScan এবং SerpAPI (Pagination সহ) ব্যবহার করে প্রচুর স্টোর বের করবে।
+    গুগল বাদ দিয়ে সরাসরি গ্লোবাল ডিরেক্টরি এবং DNS থেকে হাজার হাজার স্টোর আনবে।
     """
     all_urls = set()
     kw_clean = keyword.lower().replace(' ', '')
     
-    log(f"🔍 Searching for NEW '{keyword}' stores (Massive Volume Mode)...", "INFO")
-    
-    # SOURCE 1: URLScan.io (Recently created/scanned stores)
+    log(f"🚀 BYPASSING GOOGLE: Tapping into Global Directories for massive volume...", "INFO")
+
+    # SOURCE 1: URLScan.io (Massive search for the keyword)
+    log(f"🔍 [Source 1] URLScan: Finding recently scanned '{keyword}' stores...", "INFO")
     try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=300&sort=time"
-        r = requests.get(urlscan_url, timeout=10)
+        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=500&sort=time"
+        r = requests.get(urlscan_url, timeout=15)
         if r.status_code == 200:
             for result in r.json().get('results', []):
                 page_url = result.get('page', {}).get('url', '')
@@ -79,55 +80,45 @@ def find_shopify_stores(keyword, country, serpapi_key):
                 if m:
                     all_urls.add(f"https://{m.group(1)}.myshopify.com")
     except Exception as e:
-        pass
+        log(f"   URLScan timeout", "WARN")
 
-    # SOURCE 2: SerpAPI with Pagination (Deep Search)
-    queries = [
-        f'site:myshopify.com "{keyword}" {country}',
-        f'site:myshopify.com "{keyword}" "powered by shopify"',
-        f'site:myshopify.com intitle:"{keyword}"',
-        f'site:myshopify.com "{keyword}" "opening soon"'
-    ]
-    
-    for q in queries:
-        if len(all_urls) > 500: # লিমিট বাড়িয়ে ৫০০ করা হয়েছে
-            break
-        # Pagination: 0, 100, 200 (গুগলের ৩টা পেজ পর্যন্ত খুঁজবে)
-        for start_page in [0, 100, 200]:
-            try:
-                params = {
-                    'api_key': serpapi_key,
-                    'engine': 'google',
-                    'q': q,
-                    'num': 100,
-                    'start': start_page,
-                    'tbs': 'qdr:m' # Past Month
-                }
-                res = requests.get('https://serpapi.com/search', params=params, timeout=15)
-                if res.status_code == 200:
-                    results = res.json().get('organic_results', [])
-                    if not results:
-                        break # এই পেজে রেজাল্ট না থাকলে পরের পেজে যাবে না
-                    for item in results:
-                        m = MYSHOPIFY_RE.match(item.get('link', ''))
-                        if m:
-                            all_urls.add(f"https://{m.group(1)}.myshopify.com")
-            except Exception as e:
-                pass
-            time.sleep(1)
+    # SOURCE 2: AlienVault OTX (Passive DNS - Huge database)
+    log(f"🔍 [Source 2] AlienVault: Fetching passive DNS records...", "INFO")
+    try:
+        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
+        if r.status_code == 200:
+            for entry in r.json().get('passive_dns', []):
+                hostname = entry.get('hostname', '').lower()
+                if hostname.endswith('.myshopify.com') and '*' not in hostname:
+                    all_urls.add(f"https://{hostname}")
+    except Exception as e:
+        log(f"   AlienVault timeout", "WARN")
+
+    # SOURCE 3: CertSpotter API (Newly minted SSL certificates)
+    log(f"🔍 [Source 3] CertSpotter: Fetching newly minted SSL certificates...", "INFO")
+    try:
+        r = requests.get('https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', timeout=15)
+        if r.status_code == 200:
+            for cert in r.json():
+                for name in cert.get('dns_names', []):
+                    if name.endswith('.myshopify.com'):
+                        all_urls.add(f"https://{name}")
+    except Exception as e:
+        log(f"   CertSpotter timeout", "WARN")
 
     urls_list = list(all_urls)
     random.shuffle(urls_list)
-    log(f"📦 Found {len(urls_list)} NEW Niche stores to test!", "INFO")
+    log(f"📦 Found {len(urls_list)} RAW stores from Directories! Ready to filter by keyword.", "INFO")
     return urls_list
 
-# ── 2. HTML ANALYSIS CHECKOUT TEST (100% Accurate) ────────────────────────────
-def check_store_target(base_url, session):
+# ── 2. ON-SITE KEYWORD & HTML CHECKOUT TEST ───────────────────────────────────
+def check_store_target(base_url, session, keyword):
     """
-    ১. Cart এ প্রোডাক্ট অ্যাড করে Checkout পেজে যাবে।
-    ২. Checkout পেজের HTML কোড স্ক্যান করবে।
-    ৩. যদি card, visa, paypal ইত্যাদি থাকে -> REJECT.
-    ৪. যদি না থাকে -> ACCEPT (Lead).
+    ১. হোমপেজে আপনার কিওয়ার্ড (যেমন: shoes) আছে কিনা চেক করবে।
+    ২. Cart এ প্রোডাক্ট অ্যাড করে Checkout পেজে যাবে।
+    ৩. Checkout পেজের HTML কোড স্ক্যান করবে।
+    ৪. যদি card, visa, paypal ইত্যাদি থাকে -> REJECT.
+    ৫. যদি না থাকে -> ACCEPT (Lead).
     """
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
@@ -146,6 +137,11 @@ def check_store_target(base_url, session):
         if 'shopify' not in html and 'cdn.shopify.com' not in html:
             return {"is_shopify": False, "is_lead": False}
             
+        # 🚨 KEYWORD CHECK: ওয়েবসাইটের ভেতরে কিওয়ার্ড আছে কিনা চেক করবে
+        kw_lower = keyword.lower().strip()
+        if kw_lower and kw_lower not in html:
+            return {"is_shopify": True, "is_lead": False, "reason": f"Keyword '{kw_lower}' not found on site"}
+
         # 🚨 REJECT PASSWORD PROTECTED STORES
         if '/password' in r.url or 'password-page' in html or 'opening soon' in html:
             return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping)"}
@@ -190,7 +186,7 @@ def check_store_target(base_url, session):
     except Exception as e:
         return {"is_shopify": False, "is_lead": False}
 
-# ── Store info extraction (DEEP EMAIL FINDER) ─────────────────────────────────
+# ── Store info extraction ─────────────────────────────────────────────────────
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 SKIP_EMAIL_DOMAINS =['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg', '.svg', 'noreply', 'domain.com']
 PHONE_RE = re.compile(r'(\+\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4})')
@@ -233,7 +229,6 @@ def get_store_info(base_url, session):
         result['phone'] = extract_phone(html)
         
         if not result['email']:
-            # 🔥 DEEP EMAIL FINDER: Checking Policy Pages where emails are legally required
             paths_to_check = [
                 '/pages/contact', '/contact', '/pages/about-us', '/pages/contact-us',
                 '/policies/contact-information', '/policies/refund-policy', '/policies/terms-of-service'
@@ -331,11 +326,10 @@ def _run():
 
     cfg = cfg_resp.get('config', {})
     groq_key    = cfg.get('groq_api_key', '').strip()
-    serpapi_key = cfg.get('serpapi_key', '').strip()
     min_leads   = int(cfg.get('min_leads', 50) or 50)
 
-    if not groq_key or not serpapi_key:
-        log("❌ API Keys missing — go to CFG screen → save", "ERROR")
+    if not groq_key:
+        log("❌ Groq API Key missing — go to CFG screen → save", "ERROR")
         return
 
     log(f"✅ Config loaded | Target: {min_leads} leads", "INFO")
@@ -363,7 +357,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — NICHE SEARCH & HTML CHECKOUT ANALYSIS", "SUCCESS")
+    log("🚀 PHASE 1 — MASSIVE DIRECTORY SCRAPING & HTML CHECKOUT ANALYSIS", "SUCCESS")
     log(f"🎯 Target: {min_leads} leads from {len(ready_kws)} keywords", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
@@ -382,33 +376,36 @@ def _run():
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
         try:
-            store_urls = find_shopify_stores(keyword, country, serpapi_key)
+            # Get massive list of raw domains
+            raw_store_urls = find_shopify_stores(keyword)
         except Exception as e:
             log(f"Search failed: {e}", "WARN")
-            store_urls =[]
+            raw_store_urls =[]
 
-        if not store_urls:
+        if not raw_store_urls:
             log("⚠️  No URLs found for this keyword. Moving to next...", "WARN")
             call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
             continue
 
-        log(f"🔍 Checking {len(store_urls)} stores for payment gateways...", "INFO")
+        log(f"🔍 Filtering {len(raw_store_urls)} stores for keyword '{keyword}' and checking payments...", "INFO")
 
-        for url in store_urls:
+        for url in raw_store_urls:
             if not automation_running:
                 break
             if total_leads >= min_leads:
                 break
 
             try:
-                target_info = check_store_target(url, session)
+                target_info = check_store_target(url, session, keyword)
 
                 if not target_info.get("is_shopify"):
                     continue 
 
                 if not target_info.get("is_lead"):
-                    log(f"   🚫 REJECTED: {target_info.get('reason')} - {url}", "WARN")
-                    time.sleep(0.5)
+                    # Only log if it actually had the keyword but failed checkout test
+                    if "Keyword" not in target_info.get('reason', ''):
+                        log(f"   🚫 REJECTED: {target_info.get('reason')} - {url}", "WARN")
+                    time.sleep(0.2)
                     continue
 
                 # ✅ 100% VERIFIED NO PAYMENT FOUND IN HTML!
