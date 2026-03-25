@@ -62,7 +62,6 @@ MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.c
 # ─────────────────────────────────────────────────────────────────────────────
 
 def source_crtsh_targeted(keyword):
-    """crt.sh থেকে এমন নতুন স্টোর খুঁজবে যার ডোমেইন নামে কিওয়ার্ড আছে"""
     urls = set()
     kw_clean = keyword.lower().replace(' ', '')
     log(f"   [crt.sh] Searching SSL logs for '{kw_clean}' in domain...", "INFO")
@@ -78,7 +77,6 @@ def source_crtsh_targeted(keyword):
     return urls
 
 def source_commoncrawl(keyword):
-    """CommonCrawl থেকে লাইভ স্টোর খুঁজবে (আপনার আগের ফেভারিট সোর্স)"""
     urls = set()
     log(f"   [CommonCrawl] Searching massive live database for '{keyword}'...", "INFO")
     indexes = ['CC-MAIN-2025-08', 'CC-MAIN-2024-51', 'CC-MAIN-2024-46']
@@ -102,7 +100,6 @@ def source_commoncrawl(keyword):
     return urls
 
 def source_urlscan(keyword):
-    """URLScan থেকে রিসেন্টলি স্ক্যান হওয়া লাইভ স্টোর খুঁজবে"""
     urls = set()
     log(f"   [URLScan] Finding recently active stores for '{keyword}'...", "INFO")
     try:
@@ -117,7 +114,6 @@ def source_urlscan(keyword):
     return urls
 
 def source_duckduckgo(keyword):
-    """DuckDuckGo থেকে গত ১ সপ্তাহের নতুন ইনডেক্স হওয়া স্টোর খুঁজবে"""
     urls = set()
     log(f"   [DuckDuckGo] Finding niche stores indexed in the last 7 days...", "INFO")
     try:
@@ -131,7 +127,6 @@ def source_duckduckgo(keyword):
     return urls
 
 def source_bing(keyword):
-    """Bing থেকে লাইভ স্টোর খুঁজবে"""
     urls = set()
     log(f"   [Bing] Searching for '{keyword}'...", "INFO")
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
@@ -151,7 +146,6 @@ def source_bing(keyword):
     return urls
 
 def source_crtsh_recent():
-    """crt.sh থেকে লেটেস্ট ২০০০ স্টোর (Fallback হিসেবে)"""
     urls = set()
     log(f"   [crt.sh] Fetching recent 2000 stores as fallback...", "INFO")
     try:
@@ -168,17 +162,13 @@ def source_crtsh_recent():
     return urls
 
 def find_shopify_stores(keyword, country):
-    """সবগুলো বেস্ট সোর্স থেকে হাই-কোয়ালিটি স্টোর কালেক্ট করবে"""
     all_urls = set()
-    
-    # High Quality Sources (Live & Niche Matched)
     all_urls.update(source_duckduckgo(keyword))
     all_urls.update(source_bing(keyword))
     all_urls.update(source_urlscan(keyword))
     all_urls.update(source_commoncrawl(keyword))
     all_urls.update(source_crtsh_targeted(keyword))
     
-    # Fallback Source (Raw Volume)
     if len(all_urls) < 300:
         all_urls.update(source_crtsh_recent())
 
@@ -188,7 +178,7 @@ def find_shopify_stores(keyword, country):
     return total
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. STRICT CHECKOUT TEST (আপনার দেওয়া পারফেক্ট লজিক)
+# 2. STRICT CHECKOUT TEST
 # ─────────────────────────────────────────────────────────────────────────────
 def check_store_target(base_url, session, keyword):
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -200,7 +190,6 @@ def check_store_target(base_url, session, keyword):
     }
 
     try:
-        # Fast GET to check if store is alive
         r = session.get(base_url, headers=headers, timeout=8, allow_redirects=True)
         if r.status_code != 200:
             return {"is_shopify": False, "is_lead": False}
@@ -209,7 +198,6 @@ def check_store_target(base_url, session, keyword):
         if 'shopify' not in html and 'cdn.shopify.com' not in html:
             return {"is_shopify": False, "is_lead": False}
             
-        # 🚨 NICHE CHECK
         kw_lower = keyword.lower().strip()
         kw_clean = kw_lower.replace(' ', '')
         in_url = kw_clean in base_url.lower()
@@ -218,11 +206,9 @@ def check_store_target(base_url, session, keyword):
         if not (in_url or in_html):
             return {"is_shopify": True, "is_lead": False, "reason": "Keyword missing"}
 
-        # 🚨 STRICT RULE: REJECT PASSWORD PROTECTED STORES
         if '/password' in r.url or 'password-page' in html or 'opening soon' in html:
             return {"is_shopify": True, "is_lead": False, "reason": "Password Protected"}
 
-        # The Checkout Test (Add to cart -> Checkout)
         try:
             prod_req = session.get(f"{base_url}/products.json?limit=1", headers=headers, timeout=10)
             if prod_req.status_code == 200:
@@ -260,7 +246,9 @@ def check_store_target(base_url, session, keyword):
     except Exception as e:
         return {"is_shopify": False, "is_lead": False}
 
-# ── Store info extraction ─────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. STORE INFO EXTRACTION
+# ─────────────────────────────────────────────────────────────────────────────
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 SKIP_EMAIL_DOMAINS =['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg', '.svg', 'noreply', 'domain.com']
 PHONE_RE = re.compile(r'(\+\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4})')
@@ -320,7 +308,9 @@ def get_store_info(base_url, session):
         pass
     return result
 
-# ── AI Email generation ───────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. AI EMAIL GENERATION
+# ─────────────────────────────────────────────────────────────────────────────
 def generate_email(tpl_subject, tpl_body, lead, groq_key):
     try:
         client = Groq(api_key=groq_key)
@@ -358,7 +348,9 @@ Respond ONLY with valid JSON, nothing else:
     except Exception as e:
         return tpl_subject, f'<p>{tpl_body}</p>'
 
-# ── Main automation ───────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. MAIN AUTOMATION FLOW
+# ─────────────────────────────────────────────────────────────────────────────
 def run_automation():
     global automation_running
     automation_running = True
@@ -627,4 +619,4 @@ def api_schedule():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)+
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
