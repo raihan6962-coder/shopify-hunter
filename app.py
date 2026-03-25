@@ -9,7 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 from groq import Groq
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 import os
 
@@ -55,94 +55,136 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
+MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. MASSIVE STORE DISCOVERY (Strictly 1-7 Days Old Stores, No Google Search)
+# 1. ULTIMATE STORE DISCOVERY (Best Sources for Live & New Stores)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def source_crtsh_targeted(keyword):
-    """crt.sh থেকে এমন নতুন স্টোর খুঁজবে যার ডোমেইন নামে কিওয়ার্ড আছে (বাগ ফিক্সড)"""
+    """crt.sh থেকে এমন নতুন স্টোর খুঁজবে যার ডোমেইন নামে কিওয়ার্ড আছে"""
     urls = set()
     kw_clean = keyword.lower().replace(' ', '')
-    log(f"   [crt.sh] Fetching NEW stores containing '{kw_clean}' in domain...", "INFO")
+    log(f"   [crt.sh] Searching SSL logs for '{kw_clean}' in domain...", "INFO")
     try:
-        # 🚨 FIX: params ব্যবহার করা হয়েছে যাতে URL ঠিকমতো এনকোড হয় এবং ডাটা আসে
-        r = requests.get("https://crt.sh/", params={'q': f'%{kw_clean}%.myshopify.com', 'output': 'json'}, timeout=35)
+        r = requests.get("https://crt.sh/", params={'q': f'%{kw_clean}%.myshopify.com', 'output': 'json'}, timeout=30)
         if r.status_code == 200:
             for cert in r.json():
                 name = cert.get('common_name', '') or cert.get('name_value', '')
-                m = re.search(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com', name)
+                m = MYSHOPIFY_RE.search(name)
                 if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception as e:
-        pass
-    log(f"   crt.sh (Targeted): {len(urls)} niche stores collected", "INFO")
+    except: pass
+    log(f"   crt.sh (Targeted): {len(urls)} stores", "INFO")
     return urls
 
-def source_crtsh_recent():
-    """crt.sh থেকে গত ৭ দিনের র‍্যান্ডম নতুন স্টোর কালেক্ট করবে"""
+def source_commoncrawl(keyword):
+    """CommonCrawl থেকে লাইভ স্টোর খুঁজবে (আপনার আগের ফেভারিট সোর্স)"""
     urls = set()
-    log(f"   [crt.sh] Fetching massive list of BRAND NEW stores (Last 7 Days)...", "INFO")
-    try:
-        r = requests.get("https://crt.sh/", params={'q': '%.myshopify.com', 'output': 'json'}, timeout=45)
-        if r.status_code == 200:
-            certs = r.json()
-            # 🚨 ৫০০০ লেটেস্ট স্টোর নিবে
-            recent = sorted(certs, key=lambda x: x.get('id', 0), reverse=True)[:5000]
-            for cert in recent:
-                name = cert.get('common_name', '') or cert.get('name_value', '')
-                m = re.search(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com', name)
-                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception as e:
-        pass
-    log(f"   crt.sh (Recent): {len(urls)} new stores collected", "INFO")
+    log(f"   [CommonCrawl] Searching massive live database for '{keyword}'...", "INFO")
+    indexes = ['CC-MAIN-2025-08', 'CC-MAIN-2024-51', 'CC-MAIN-2024-46']
+    for idx in indexes:
+        if len(urls) >= 300: break
+        for kv in [keyword.replace(' ', '-'), keyword.replace(' ', ''), keyword]:
+            try:
+                r = requests.get(
+                    f"https://index.commoncrawl.org/{idx}-index",
+                    params={'url': f'*.myshopify.com/*{kv}*', 'output': 'json', 'limit': 500, 'fl': 'url'},
+                    timeout=20)
+                if r.status_code == 200 and r.text.strip():
+                    for line in r.text.strip().split('\n'):
+                        try:
+                            m = MYSHOPIFY_RE.search(json.loads(line).get('url', ''))
+                            if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+                        except: continue
+            except: pass
+            time.sleep(0.5)
+    log(f"   CommonCrawl: {len(urls)} stores", "INFO")
     return urls
 
-def source_urlscan_recent(keyword):
-    """URLScan থেকে গত ৭ দিনে স্ক্যান হওয়া নির্দিষ্ট নিশের স্টোর খুঁজবে"""
+def source_urlscan(keyword):
+    """URLScan থেকে রিসেন্টলি স্ক্যান হওয়া লাইভ স্টোর খুঁজবে"""
     urls = set()
-    log(f"   [URLScan] Finding recent scans (Last 7 Days) for '{keyword}'...", "INFO")
+    log(f"   [URLScan] Finding recently active stores for '{keyword}'...", "INFO")
     try:
-        query = f'domain:myshopify.com AND date:>now-7d AND "{keyword}"'
-        r = requests.get(f"https://urlscan.io/api/v1/search/?q={query}&size=100&sort=time", timeout=15)
+        query = f'domain:myshopify.com AND "{keyword}"'
+        r = requests.get(f"https://urlscan.io/api/v1/search/?q={query}&size=300&sort=time", timeout=15)
         if r.status_code == 200:
             for res in r.json().get('results', []):
-                page_url = res.get('page', {}).get('url', '')
-                m = MYSHOPIFY_RE.search(page_url)
+                m = MYSHOPIFY_RE.search(res.get('page', {}).get('url', ''))
                 if m: urls.add(f"https://{m.group(1)}.myshopify.com")
     except: pass
     log(f"   URLScan: {len(urls)} stores", "INFO")
     return urls
 
-def source_alienvault_recent():
-    """AlienVault থেকে গত ৭ দিনের নতুন স্টোর কালেক্ট করবে"""
+def source_duckduckgo(keyword):
+    """DuckDuckGo থেকে গত ১ সপ্তাহের নতুন ইনডেক্স হওয়া স্টোর খুঁজবে"""
     urls = set()
-    log(f"   [AlienVault] Fetching recent domains (Last 7 Days)...", "INFO")
+    log(f"   [DuckDuckGo] Finding niche stores indexed in the last 7 days...", "INFO")
     try:
-        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
-        if r.status_code == 200:
-            cutoff = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-            for entry in r.json().get('passive_dns', []):
-                first_seen = entry.get('first', '')[:10]
-                if first_seen and first_seen >= cutoff:
-                    h = entry.get('hostname', '').lower()
-                    if h.endswith('.myshopify.com') and '*' not in h:
-                        urls.add(f"https://{h}")
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        data = f'q=site:myshopify.com "{keyword}"&df=w'
+        r = requests.post("https://lite.duckduckgo.com/lite/", headers=headers, data=data, timeout=15)
+        for m in MYSHOPIFY_RE.finditer(r.text):
+            urls.add(f"https://{m.group(1)}.myshopify.com")
     except: pass
-    log(f"   AlienVault: {len(urls)} stores", "INFO")
+    log(f"   DuckDuckGo: {len(urls)} stores", "INFO")
+    return urls
+
+def source_bing(keyword):
+    """Bing থেকে লাইভ স্টোর খুঁজবে"""
+    urls = set()
+    log(f"   [Bing] Searching for '{keyword}'...", "INFO")
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
+    queries = [f'site:myshopify.com "{keyword}" "opening soon"', f'site:myshopify.com "{keyword}"']
+    session = requests.Session()
+    for q in queries:
+        if len(urls) >= 150: break
+        for first in [1, 11, 21]:
+            try:
+                r = session.get('https://www.bing.com/search', params={'q': q, 'first': first, 'count': 10}, headers=headers, timeout=10)
+                if r.status_code == 200:
+                    for m in MYSHOPIFY_RE.finditer(r.text):
+                        urls.add(f"https://{m.group(1)}.myshopify.com")
+            except: pass
+            time.sleep(1)
+    log(f"   Bing: {len(urls)} stores", "INFO")
+    return urls
+
+def source_crtsh_recent():
+    """crt.sh থেকে লেটেস্ট ২০০০ স্টোর (Fallback হিসেবে)"""
+    urls = set()
+    log(f"   [crt.sh] Fetching recent 2000 stores as fallback...", "INFO")
+    try:
+        r = requests.get("https://crt.sh/", params={'q': '%.myshopify.com', 'output': 'json'}, timeout=30)
+        if r.status_code == 200:
+            certs = r.json()
+            recent = sorted(certs, key=lambda x: x.get('id', 0), reverse=True)[:2000]
+            for cert in recent:
+                name = cert.get('common_name', '') or cert.get('name_value', '')
+                m = MYSHOPIFY_RE.search(name)
+                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+    except: pass
+    log(f"   crt.sh (Fallback): {len(urls)} stores", "INFO")
     return urls
 
 def find_shopify_stores(keyword, country):
-    """গুগল সার্চ ছাড়াই শুধু রিয়েল-টাইম ডাটাবেস থেকে ১-৭ দিনের স্টোর আনবে"""
+    """সবগুলো বেস্ট সোর্স থেকে হাই-কোয়ালিটি স্টোর কালেক্ট করবে"""
     all_urls = set()
+    
+    # High Quality Sources (Live & Niche Matched)
+    all_urls.update(source_duckduckgo(keyword))
+    all_urls.update(source_bing(keyword))
+    all_urls.update(source_urlscan(keyword))
+    all_urls.update(source_commoncrawl(keyword))
     all_urls.update(source_crtsh_targeted(keyword))
-    all_urls.update(source_urlscan_recent(keyword))
-    all_urls.update(source_alienvault_recent())
-    all_urls.update(source_crtsh_recent())
+    
+    # Fallback Source (Raw Volume)
+    if len(all_urls) < 300:
+        all_urls.update(source_crtsh_recent())
 
     total = list(all_urls)
     random.shuffle(total)
-    log(f"📦 Total: {len(total)} NEW stores (1-7 Days old). Checking checkout...", "SUCCESS")
+    log(f"📦 Total: {len(total)} High-Quality stores found! Checking checkout...", "SUCCESS")
     return total
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -158,7 +200,8 @@ def check_store_target(base_url, session, keyword):
     }
 
     try:
-        r = session.get(base_url, headers=headers, timeout=10, allow_redirects=True)
+        # Fast GET to check if store is alive
+        r = session.get(base_url, headers=headers, timeout=8, allow_redirects=True)
         if r.status_code != 200:
             return {"is_shopify": False, "is_lead": False}
             
@@ -166,7 +209,7 @@ def check_store_target(base_url, session, keyword):
         if 'shopify' not in html and 'cdn.shopify.com' not in html:
             return {"is_shopify": False, "is_lead": False}
             
-        # 🚨 NICHE CHECK: ডোমেইন নামে অথবা হোমপেজে কিওয়ার্ড থাকতে হবে
+        # 🚨 NICHE CHECK
         kw_lower = keyword.lower().strip()
         kw_clean = kw_lower.replace(' ', '')
         in_url = kw_clean in base_url.lower()
@@ -378,7 +421,6 @@ def _run():
         country = kw_row.get('country', '')
         kw_id   = kw_row.get('id', '')
         
-        # 🚨 FIX: Added rej_not_shopify to track dead/parked domains
         kw_leads = rej_pay = rej_pass_noprod = rej_keyword = rej_not_shopify = 0
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
@@ -402,7 +444,6 @@ def _run():
             try:
                 target_info = check_store_target(url, session, keyword)
 
-                # 🚨 FIX: Log when a store is dead/parked (Not Shopify)
                 if not target_info.get("is_shopify"):
                     rej_not_shopify += 1
                     processed_count = idx + 1
@@ -586,4 +627,4 @@ def api_schedule():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)+
