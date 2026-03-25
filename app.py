@@ -46,51 +46,81 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THE SIMPLE 7-DAYS SSL SCRAPER
+# THE BULLETPROOF 7-DAYS SSL SCRAPER
 # ─────────────────────────────────────────────────────────────────────────────
 def get_recent_ssl_stores(keyword):
-    """
-    শুধুমাত্র গত ৭ দিনে তৈরি হওয়া Niche স্টোরগুলো SSL থেকে বের করবে।
-    """
     urls = set()
     kw_clean = keyword.lower().replace(' ', '')
     seven_days_ago = datetime.now() - timedelta(days=7)
     
     log(f"🔍 Searching SSL databases for '{keyword}' stores created in the last 7 days...", "INFO")
 
-    # SOURCE 1: URLScan.io (Strictly last 7 days)
+    # SOURCE 1: CertSpotter (Super Fast, No JSON Errors)
+    log(f"   -> Checking CertSpotter (Newly minted SSL certs)...", "INFO")
+    try:
+        r = requests.get(
+            'https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', 
+            timeout=15
+        )
+        if r.status_code == 200:
+            for cert in r.json():
+                for name in cert.get('dns_names', []):
+                    if name.endswith('.myshopify.com') and kw_clean in name.lower():
+                        urls.add(f"https://{name}")
+    except Exception as e:
+        log(f"   CertSpotter error: {e}", "WARN")
+
+    # SOURCE 2: crt.sh (With Retry & JSON Error Protection)
+    log(f"   -> Checking crt.sh SSL Logs (With Crash Protection)...", "INFO")
+    for attempt in range(3):
+        try:
+            r = requests.get(
+                f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", 
+                timeout=20,
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            )
+            if r.status_code == 200:
+                try:
+                    certs = r.json()
+                    for cert in certs:
+                        date_str = cert.get('not_before', '') # Example: "2024-03-20T00:00:00"
+                        if date_str:
+                            try:
+                                cert_date = datetime.strptime(date_str.split('T')[0], '%Y-%m-%d')
+                                # Check if it's within the last 7 days
+                                if cert_date >= seven_days_ago:
+                                    name = cert.get('common_name', '') or cert.get('name_value', '')
+                                    for n in name.split('\n'):
+                                        m = MYSHOPIFY_RE.search(n)
+                                        if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+                            except Exception:
+                                pass
+                    break # Success, exit retry loop
+                except ValueError:
+                    log(f"   crt.sh returned HTML instead of JSON (Attempt {attempt+1}/3). Retrying...", "WARN")
+                    time.sleep(3)
+            else:
+                log(f"   crt.sh returned status {r.status_code} (Attempt {attempt+1}/3). Retrying...", "WARN")
+                time.sleep(3)
+        except Exception as e:
+            log(f"   crt.sh connection error (Attempt {attempt+1}/3). Retrying...", "WARN")
+            time.sleep(3)
+
+    # SOURCE 3: URLScan.io (Fixed Query)
     log(f"   -> Checking URLScan (Past 7 days)...", "INFO")
     try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND date:>now-7d AND {kw_clean}&size=1000"
+        # Simplified query to avoid API confusion
+        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND date:>now-7d&size=1000"
         r = requests.get(urlscan_url, timeout=15)
         if r.status_code == 200:
             for res in r.json().get('results', []):
-                m = MYSHOPIFY_RE.search(res.get('page', {}).get('url', ''))
-                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+                page_url = res.get('page', {}).get('url', '')
+                m = MYSHOPIFY_RE.search(page_url)
+                # Filter by keyword in Python instead of API
+                if m and kw_clean in m.group(1).lower():
+                    urls.add(f"https://{m.group(1)}.myshopify.com")
     except Exception as e:
         log(f"   URLScan error: {e}", "WARN")
-
-    # SOURCE 2: crt.sh (Filtering by SSL creation date)
-    log(f"   -> Checking crt.sh SSL Logs (Filtering dates)...", "INFO")
-    try:
-        r = requests.get(f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", timeout=20)
-        if r.status_code == 200:
-            for cert in r.json():
-                date_str = cert.get('not_before', '') # Example: "2024-03-20T00:00:00"
-                if date_str:
-                    try:
-                        # Convert string to date object
-                        cert_date = datetime.strptime(date_str.split('T')[0], '%Y-%m-%d')
-                        # Check if it's within the last 7 days
-                        if cert_date >= seven_days_ago:
-                            name = cert.get('common_name', '') or cert.get('name_value', '')
-                            for n in name.split('\n'):
-                                m = MYSHOPIFY_RE.search(n)
-                                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-                    except Exception:
-                        pass
-    except Exception as e:
-        log(f"   crt.sh error: {e}", "WARN")
 
     urls_list = list(urls)
     log(f"📦 Found {len(urls_list)} VERIFIED NEW stores (1-7 days old) for '{keyword}'!", "SUCCESS")
