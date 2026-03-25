@@ -6,7 +6,6 @@ import json
 import re
 import random
 import requests
-from bs4 import BeautifulSoup
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import logging
@@ -119,18 +118,6 @@ def get_massive_store_list(keyword, country, serpapi_key):
     log(f"📦 Generated & Scraped {len(urls_list)} potential stores to test!", "SUCCESS")
     return urls_list
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CHECKOUT HTML ANALYSIS & EMAIL EXTRACTION (Kept in code, but bypassed in run)
-# ─────────────────────────────────────────────────────────────────────────────
-def check_store_target(base_url, session, keyword):
-    pass # Bypassed for now
-
-def get_store_info(base_url, session):
-    pass # Bypassed for now
-
-def generate_email(tpl_subject, tpl_body, lead, groq_key):
-    pass # Bypassed for now
-
 # ── Main automation ───────────────────────────────────────────────────────────
 def run_automation():
     global automation_running
@@ -152,7 +139,9 @@ def _run():
 
     cfg = cfg_resp.get('config', {})
     serpapi_key = cfg.get('serpapi_key', '').strip()
-    min_leads = int(cfg.get('min_leads', 50) or 50)
+    
+    # 🔥 FIX: Limit removed! It will save EVERYTHING it finds.
+    log(f"✅ Config loaded | Target: UNLIMITED (Saving all found URLs)", "INFO")
 
     kw_resp = call_sheet({'action': 'get_keywords'})
     ready_kws = [k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
@@ -160,17 +149,14 @@ def _run():
         log("❌ No READY keywords!", "ERROR"); return
     log(f"🗝️  {len(ready_kws)} keywords ready", "INFO")
 
-    session = requests.Session()
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — SCRAPE & SAVE DIRECTLY TO SHEET", "SUCCESS")
+    log("🚀 PHASE 1 — SCRAPE & SAVE ALL URLS DIRECTLY TO SHEET", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     for kw_row in ready_kws:
         if not automation_running: break
-        if total_leads >= min_leads:
-            log(f"🎯 Target reached! ({total_leads}/{min_leads})", "SUCCESS"); break
 
         keyword  = kw_row.get('keyword', '')
         country  = kw_row.get('country', '')
@@ -187,22 +173,15 @@ def _run():
             call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
             continue
 
-        log(f"💾 Saving alive stores directly to Google Sheet...", "INFO")
+        log(f"💾 Saving ALL {len(store_urls)} stores directly to Google Sheet...", "INFO")
 
         for idx, url in enumerate(store_urls):
             if not automation_running: break
-            if total_leads >= min_leads: break
 
             try:
-                # 🔥 QUICK ALIVE CHECK: শুধু দেখবে ওয়েবসাইটটা বেঁচে আছে কিনা (Timeout 5s)
-                r = session.get(url, timeout=5)
-                if r.status_code != 200 or 'shopify' not in r.text.lower():
-                    continue # ওয়েবসাইট নষ্ট হলে স্কিপ করবে
-
-                # সুন্দর করে স্টোরের নাম বানাবে URL থেকে
+                # 🔥 FIX: No Alive Check! Just save it immediately.
                 store_name = url.replace('https://', '').replace('.myshopify.com', '').replace('-', ' ').title()
                 
-                # সরাসরি শিটে সেভ করবে
                 save_resp = call_sheet({
                     'action': 'save_lead', 
                     'store_name': store_name,
@@ -221,7 +200,9 @@ def _run():
 
                 total_leads += 1; kw_leads += 1
                 log(f"   [{idx+1}/{len(store_urls)}] ✅ SAVED #{total_leads} → {url}", "SUCCESS")
-                time.sleep(0.5) # ফাস্ট সেভ করার জন্য ডিলে কমানো হয়েছে
+                
+                # Fast saving (0.2s delay to prevent Google Sheet API timeout)
+                time.sleep(0.2) 
 
             except Exception as e:
                 continue
@@ -230,7 +211,7 @@ def _run():
         log(f"✅ '{keyword}' done → {kw_leads} urls saved", "SUCCESS")
 
     log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log(f"🎉 ALL DONE! {total_leads} URLs saved to Google Sheet. (Checkout Phase Skipped)", "SUCCESS")
+    log(f"🎉 ALL DONE! {total_leads} URLs saved to Google Sheet.", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
 # ── Flask routes ──────────────────────────────────────────────────────────────
