@@ -59,20 +59,17 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: MASSIVE DISCOVERY (NEW STORES ONLY - LAST 7 DAYS)
+# 1. MASSIVE STORE DISCOVERY (আপনার রিকোয়েস্ট অনুযায়ী হাই-ভলিউম স্ক্র্যাপিং)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def source_crtsh():
-    """
-    crt.sh থেকে একদম নতুন তৈরি হওয়া (Brand New) ৩০০০-৫০০০ স্টোর কালেক্ট করবে।
-    """
+    """crt.sh থেকে একদম নতুন তৈরি হওয়া (Brand New) ৩০০০-৫০০০ স্টোর কালেক্ট করবে।"""
     urls = set()
     log(f"   [crt.sh] Fetching massive list of BRAND NEW stores (Last 7 Days)...", "INFO")
     try:
         r = requests.get("https://crt.sh/?q=%.myshopify.com&output=json", timeout=45)
         if r.status_code == 200:
             certs = r.json()
-            # Sort by ID descending (newest first) and take top 4000
             recent = sorted(certs, key=lambda x: x.get('id', 0), reverse=True)[:4000]
             for cert in recent:
                 name = cert.get('common_name', '') or cert.get('name_value', '')
@@ -80,14 +77,11 @@ def source_crtsh():
                 if m: urls.add(f"https://{m.group(1)}.myshopify.com")
     except Exception as e:
         log(f"   crt.sh error: {e}", "WARN")
-    
     log(f"   crt.sh: {len(urls)} new stores collected", "INFO")
     return urls
 
 def source_search_recent(keyword):
-    """
-    DuckDuckGo ব্যবহার করে গত ১ সপ্তাহে (df=w) ইনডেক্স হওয়া নির্দিষ্ট নিশের স্টোর খুঁজবে।
-    """
+    """DuckDuckGo ব্যবহার করে গত ১ সপ্তাহে (df=w) ইনডেক্স হওয়া স্টোর খুঁজবে।"""
     urls = set()
     log(f"   [Search] Finding niche '{keyword}' stores indexed in the last 7 days...", "INFO")
     try:
@@ -101,9 +95,7 @@ def source_search_recent(keyword):
     return urls
 
 def source_urlscan_recent(keyword):
-    """
-    URLScan থেকে গত ৭ দিনে স্ক্যান হওয়া নির্দিষ্ট নিশের স্টোর খুঁজবে।
-    """
+    """URLScan থেকে গত ৭ দিনে স্ক্যান হওয়া নির্দিষ্ট নিশের স্টোর খুঁজবে।"""
     urls = set()
     log(f"   [URLScan] Finding recent scans (Last 7 Days) for '{keyword}'...", "INFO")
     try:
@@ -119,6 +111,7 @@ def source_urlscan_recent(keyword):
     return urls
 
 def find_shopify_stores(keyword, country):
+    """সবগুলো সোর্স থেকে একসাথে হাজার হাজার স্টোর কালেক্ট করবে"""
     all_urls = set()
     all_urls.update(source_search_recent(keyword))
     all_urls.update(source_urlscan_recent(keyword))
@@ -129,15 +122,10 @@ def find_shopify_stores(keyword, country):
     log(f"📦 Total: {len(total)} NEW stores. Filtering by niche '{keyword}' & checking checkout...", "SUCCESS")
     return total
 
-# ── 2. STRICT CHECKOUT TEST (No Password Pages, Only No-Payment) ──────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. STRICT CHECKOUT TEST (আপনার দেওয়া পারফেক্ট লজিক)
+# ─────────────────────────────────────────────────────────────────────────────
 def check_store_target(base_url, session, keyword):
-    """
-    ১. Niche Check: হোমপেজে কিওয়ার্ড না থাকলে স্কিপ করবে।
-    ২. Password Page থাকলে সোজা রিজেক্ট করবে।
-    ৩. Cart এ প্রোডাক্ট অ্যাড করে Checkout পেজে যাবে।
-    ৪. Checkout পেজে visa/paypal থাকলে রিজেক্ট করবে।
-    ৫. যদি কোনো পেমেন্ট মেথড না পায়, তাহলেই লিড হিসেবে নিবে!
-    """
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
     headers = {
@@ -155,7 +143,7 @@ def check_store_target(base_url, session, keyword):
         if 'shopify' not in html and 'cdn.shopify.com' not in html:
             return {"is_shopify": False, "is_lead": False}
             
-        # 🚨 NICHE CHECK: হোমপেজে কিওয়ার্ড না থাকলে স্কিপ করবে
+        # 🚨 NICHE CHECK: যেহেতু crt.sh থেকে সব নিশের স্টোর আসবে, তাই হোমপেজে কিওয়ার্ড চেক করা জরুরি
         kw_lower = keyword.lower().strip()
         if kw_lower and kw_lower not in html:
             return {"is_shopify": True, "is_lead": False, "reason": "Keyword missing"}
@@ -179,7 +167,6 @@ def check_store_target(base_url, session, keyword):
                     chk_req = session.get(f"{base_url}/checkout", headers=headers, timeout=15)
                     chk_html = chk_req.text.lower()
                     
-                    # নিশ্চিত হওয়া যে আমরা আসলেই চেকআউট পেজে আছি
                     if 'checkout' not in chk_html and 'contact information' not in chk_html and "isn't accepting payments" not in chk_html:
                         return {"is_shopify": True, "is_lead": False, "reason": "Could not reach valid checkout page"}
 
@@ -189,16 +176,14 @@ def check_store_target(base_url, session, keyword):
                         'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 'shop pay', 'apple pay', 'google pay'
                     ]
                     
-                    # যদি পেমেন্ট গেটওয়ের নাম থাকে, তাহলে রিজেক্ট
                     for pk in payment_keywords:
                         if pk in chk_html:
                             return {"is_shopify": True, "is_lead": False, "reason": f"Active Checkout ('{pk}' found)"}
                     
-                    # ✅ যদি চেকআউট পেজে আসে এবং কোনো পেমেন্ট গেটওয়ের নাম না থাকে, তারমানে পেমেন্ট নাই! (LEAD ACCEPTED)
+                    # ✅ NO PAYMENT OPTIONS FOUND
                     if "isn't accepting payments" in chk_html or "not accepting payments" in chk_html:
                         return {"is_shopify": True, "is_lead": True, "reason": "Live Store -> Checkout Disabled (Explicit Error)!"}
                     
-                    # Explicit error না পেলেও যদি পেমেন্ট কিওয়ার্ড না থাকে, তবে লিড হিসেবে নিবে।
                     return {"is_shopify": True, "is_lead": True, "reason": "No Payment Options Found on Checkout!"}
                     
             return {"is_shopify": True, "is_lead": False, "reason": "Could not test checkout (No products to add)"}
@@ -209,7 +194,7 @@ def check_store_target(base_url, session, keyword):
     except Exception as e:
         return {"is_shopify": False, "is_lead": False}
 
-# ── Store info extraction ─────────────────────────────────────────────────────
+# ── Store info extraction (আপনার দেওয়া অরিজিনাল কোড) ─────────────────────────
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 SKIP_EMAIL_DOMAINS =['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg', '.svg', 'noreply', 'domain.com']
 PHONE_RE = re.compile(r'(\+\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4})')
@@ -269,7 +254,7 @@ def get_store_info(base_url, session):
         log(f"Info extraction error: {e}", "WARN")
     return result
 
-# ── AI Email generation ───────────────────────────────────────────────────────
+# ── AI Email generation (আপনার দেওয়া অরিজিনাল কোড) ───────────────────────────
 def generate_email(tpl_subject, tpl_body, lead, groq_key):
     try:
         client = Groq(api_key=groq_key)
@@ -325,13 +310,11 @@ def run_automation():
 def _run():
     global automation_running
 
-    # ── Load config ──────────────────────────────────────────────────────────
     log("📋 Loading config from Google Sheet...", "INFO")
     cfg_resp = call_sheet({'action': 'get_config'})
 
     if cfg_resp.get('error'):
         log(f"❌ Cannot reach Apps Script: {cfg_resp['error']}", "ERROR")
-        log("👉 Make sure APPS_SCRIPT_URL is set in Render → Environment", "ERROR")
         return
 
     cfg = cfg_resp.get('config', {})
@@ -344,7 +327,6 @@ def _run():
 
     log(f"✅ Config loaded | Target: {min_leads} leads", "INFO")
 
-    # ── Load keywords ────────────────────────────────────────────────────────
     kw_resp = call_sheet({'action': 'get_keywords'})
     ready_kws = [k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
     if not ready_kws:
@@ -352,7 +334,6 @@ def _run():
         return
     log(f"🗝️  {len(ready_kws)} keywords ready", "INFO")
 
-    # ── Load template ────────────────────────────────────────────────────────
     tpl_resp = call_sheet({'action': 'get_templates'})
     templates = tpl_resp.get('templates',[])
     if not templates:
@@ -361,7 +342,6 @@ def _run():
     tpl = templates[0]
     log(f"📧 Template loaded: '{tpl['name']}'", "INFO")
 
-    # ── Phase 1: Lead collection ─────────────────────────────────────────────
     session = requests.Session()
     session.max_redirects = 3
     total_leads = 0
@@ -386,7 +366,7 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # Search for massive fresh stores
+        # 📦 এখানে আপনার রিকোয়েস্ট অনুযায়ী আমার দেওয়া হাই-ভলিউম স্ক্র্যাপিং কল করা হচ্ছে
         try:
             store_urls = find_shopify_stores(keyword, country)
         except Exception as e:
@@ -407,16 +387,16 @@ def _run():
                 break
 
             try:
-                # Step 1 & 2: Verify Shopify, Niche Check & Check Checkout Page
+                # 🛡️ এখানে আপনার দেওয়া নিখুঁত চেকআউট লজিক কল করা হচ্ছে
                 target_info = check_store_target(url, session, keyword)
 
                 if not target_info.get("is_shopify"):
-                    continue # Silent skip for non-shopify
+                    continue 
 
                 if not target_info.get("is_lead"):
                     reason = target_info.get('reason', '')
                     
-                    # 🚨 FIX: Terminal Log Spam Prevention (Clean UI)
+                    # 🚨 টার্মিনাল স্প্যাম এড়াতে কাউন্টার ব্যবহার করা হয়েছে
                     if "Keyword missing" in reason:
                         rej_keyword += 1
                     elif any(w in reason.lower() for w in ['has:', 'payment', 'visa', 'stripe', 'active checkout']):
@@ -429,13 +409,11 @@ def _run():
                         log(f"   ⚡ Progress: [{processed_count}/{len(store_urls)}] Checked | Niche Mismatch: {rej_keyword} | Paid: {rej_pay}", "INFO")
                     continue
 
-                # ✅ NO payment found on Checkout!
+                # ✅ LEAD FOUND!
                 log(f"   🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
 
-                # Step 3: Extract contact info
                 info = get_store_info(url, session)
 
-                # Step 4: Save to Google Sheet
                 save_resp = call_sheet({
                     'action': 'save_lead',
                     'store_name': info['store_name'],
@@ -459,11 +437,9 @@ def _run():
             except Exception as e:
                 continue
 
-        # Mark keyword as used
         call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': kw_leads})
         log(f"✅ '{keyword}' done → {kw_leads} leads found", "SUCCESS")
 
-    # ── Phase 2: Email outreach ───────────────────────────────────────────────
     log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
     log(f"📊 Scraping done! Total leads: {total_leads}", "SUCCESS")
     log("📧 PHASE 2 — EMAIL OUTREACH STARTING", "INFO")
@@ -520,10 +496,9 @@ def api_status():
     global last_status_fetch, cached_status
     script_url = os.environ.get('APPS_SCRIPT_URL', '')
     
-    # 🚨 FIX: Dashboard will only fetch data from Google Sheets once every 60 seconds
+    # 🚨 FIX: "Sheet timeout" সমস্যা সমাধানের জন্য ক্যাশিং ব্যবহার করা হয়েছে
     if script_url and (time.time() - last_status_fetch > 60):
         try:
-            # Using direct requests instead of call_sheet to prevent "Sheet timeout" logs in terminal
             r1 = requests.post(script_url, json={'action': 'get_leads'}, timeout=15)
             if r1.status_code == 200:
                 leads = r1.json().get('leads', [])
@@ -538,7 +513,7 @@ def api_status():
                 
             last_status_fetch = time.time()
         except:
-            pass # Fail silently, keep old cache so it doesn't spam logs
+            pass 
 
     return jsonify({
         'running': automation_running, 
