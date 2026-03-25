@@ -22,6 +22,10 @@ automation_thread = None
 scheduler = BackgroundScheduler()
 scheduler.start()
 
+# Dashboard Caching Variables (To fix "Sheet timeout" bug)
+last_status_fetch = 0
+cached_status = {'total_leads': 0, 'emails_sent': 0, 'kw_total': 0, 'kw_used': 0}
+
 # ── Apps Script communication ─────────────────────────────────────────────────
 def call_sheet(payload):
     script_url = os.environ.get('APPS_SCRIPT_URL', '')
@@ -55,163 +59,107 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ── 1. STORE DISCOVERY — crt.sh Certificate Transparency Log ──────────────────
-# crt.sh automatically lists EVERY new Shopify store the moment it's created
-# because every myshopify.com subdomain gets an SSL certificate immediately.
-# This is the most reliable real-time source for new Shopify stores.
-
 def find_shopify_stores(keyword, country, serpapi_key=''):
-    """
-    crt.sh = Certificate Transparency Log.
-    প্রতিটি নতুন Shopify store তৈরি হওয়ার সাথে সাথে SSL certificate নেয়।
-    crt.sh সেই certificate real-time এ log করে।
-    আমরা keyword দিয়ে filter করে শুধু niche-matched recent stores পাবো।
-    """
     all_urls = set()
     kw = keyword.lower().strip()
     kw_words = kw.split()
     kw_clean = kw.replace(' ', '')
 
     def subdomain_matches(sub):
-        """Check if subdomain name contains the keyword."""
         sub = sub.lower()
-        if kw_clean in sub:
-            return True
+        if kw_clean in sub: return True
         for word in kw_words:
-            if len(word) >= 3 and word in sub:
-                return True
+            if len(word) >= 3 and word in sub: return True
         return False
 
-    # ── Source 1: crt.sh keyword search ──────────────────────────────────────
-    # Searches for stores where keyword appears in the subdomain name
-    log(f"   [crt.sh] Searching SSL logs for '{keyword}' stores...", "INFO")
-    crt_queries = [
-        f"%{kw_clean}%.myshopify.com",      # keyword anywhere in subdomain
-        f"{kw_clean}%.myshopify.com",        # starts with keyword
-        f"%-{kw_clean}.myshopify.com",       # ends with -keyword
-        f"%-{kw_clean}-%.myshopify.com",     # keyword in middle
-    ]
-    for q in crt_queries:
-        try:
-            r = requests.get(
-                f"https://crt.sh/?q={q}&output=json",
-                timeout=15,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
-            if r.status_code == 200 and r.text.strip().startswith('['):
-                found = 0
-                for entry in r.json():
-                    name_val = entry.get('name_value', '')
-                    logged_at = entry.get('entry_timestamp', '')[:10]
-                    for domain in name_val.split('\n'):
-                        domain = domain.strip().replace('*.', '').lower()
-                        if (domain.endswith('.myshopify.com') and
-                                '*' not in domain and
-                                subdomain_matches(domain.replace('.myshopify.com', ''))):
-                            all_urls.add(f"https://{domain}")
-                            found += 1
-                if found:
-                    log(f"   crt.sh [{q}]: +{found}", "INFO")
-            time.sleep(0.5)
-        except Exception as e:
-            log(f"   crt.sh error: {e}", "WARN")
+    # ── Source 1: crt.sh (Massive Recent Stores) ─────────────────────────────
+    log(f"   [crt.sh] Fetching massive list of BRAND NEW stores...", "INFO")
+    try:
+        r = requests.get("https://crt.sh/?q=%.myshopify.com&output=json", timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
+        if r.status_code == 200:
+            certs = r.json()
+            # Sort by ID descending (newest first) and take top 4000
+            recent = sorted(certs, key=lambda x: x.get('id', 0), reverse=True)[:4000]
+            found = 0
+            for cert in recent:
+                name = cert.get('common_name', '') or cert.get('name_value', '')
+                m = re.search(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com', name)
+                if m:
+                    all_urls.add(f"https://{m.group(1)}.myshopify.com")
+                    found += 1
+            log(f"   crt.sh: +{found} recent stores", "INFO")
+    except Exception as e:
+        log(f"   crt.sh error: {e}", "WARN")
 
-    log(f"   crt.sh total: {len(all_urls)} stores", "INFO")
-
-    # ── Source 2: URLScan.io — real-time web scan database ───────────────────
-    log(f"   [URLScan] Searching for recent '{keyword}' stores...", "INFO")
+    # ── Source 2: URLScan.io — recent 7 days ─────────────────────────────────
+    log(f"   [URLScan] Searching for recent stores...", "INFO")
     try:
         r = requests.get(
-            f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com+AND+domain:{kw_clean}&size=200&sort=time",
-            timeout=12,
-            headers={'User-Agent': 'Mozilla/5.0'}
+            f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com+AND+date:>now-7d&size=200&sort=time",
+            timeout=12, headers={'User-Agent': 'Mozilla/5.0'}
         )
         if r.status_code == 200:
             found = 0
             for res in r.json().get('results', []):
                 page_url = res.get('page', {}).get('url', '')
                 m = MYSHOPIFY_RE.search(page_url)
-                if m and subdomain_matches(m.group(1)):
+                if m:
                     all_urls.add(f"https://{m.group(1)}.myshopify.com")
                     found += 1
             log(f"   URLScan: +{found} stores", "INFO")
     except Exception as e:
-        log(f"   URLScan error: {e}", "WARN")
+        pass
 
-    # ── Source 3: AlienVault OTX passive DNS ──────────────────────────────────
+    # ── Source 3: AlienVault OTX passive DNS (Last 60 days) ──────────────────
     log(f"   [AlienVault] Passive DNS lookup...", "INFO")
     try:
-        r = requests.get(
-            "https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns",
-            timeout=12,
-            headers={'User-Agent': 'Mozilla/5.0'}
-        )
+        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=12)
         if r.status_code == 200:
             found = 0
             cutoff = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
             for entry in r.json().get('passive_dns', []):
                 first_seen = entry.get('first', '')[:10]
-                if first_seen and first_seen < cutoff:
-                    continue
+                if first_seen and first_seen < cutoff: continue
                 h = entry.get('hostname', '').lower()
                 if h.endswith('.myshopify.com') and '*' not in h:
-                    sub = h.replace('.myshopify.com', '')
-                    if subdomain_matches(sub):
-                        all_urls.add(f"https://{h}")
-                        found += 1
+                    all_urls.add(f"https://{h}")
+                    found += 1
             log(f"   AlienVault: +{found} stores", "INFO")
     except Exception as e:
-        log(f"   AlienVault error: {e}", "WARN")
+        pass
 
-    # ── Source 4: Anubis subdomain scanner ───────────────────────────────────
-    log(f"   [Anubis] Subdomain scan...", "INFO")
+    # ── Source 4 & 5: Anubis & HackerTarget (Old databases, so we use strict matching) ──
+    log(f"   [Anubis & HackerTarget] Scanning old databases with strict keyword match...", "INFO")
     try:
-        r = requests.get(
-            "https://jldc.me/anubis/subdomains/myshopify.com",
-            timeout=12,
-            headers={'User-Agent': 'Mozilla/5.0'}
-        )
+        r = requests.get("https://jldc.me/anubis/subdomains/myshopify.com", timeout=12)
         if r.status_code == 200:
-            found = 0
             for h in r.json():
                 h = str(h).lower()
                 if h.endswith('.myshopify.com') and '*' not in h:
                     sub = h.replace('.myshopify.com', '')
                     if subdomain_matches(sub):
                         all_urls.add(f"https://{h}")
-                        found += 1
-            log(f"   Anubis: +{found} stores", "INFO")
-    except Exception as e:
-        log(f"   Anubis error: {e}", "WARN")
+    except: pass
 
-    # ── Source 5: HackerTarget ───────────────────────────────────────────────
-    log(f"   [HackerTarget] Host search...", "INFO")
     try:
-        r = requests.get(
-            "https://api.hackertarget.com/hostsearch/?q=myshopify.com",
-            timeout=12,
-            headers={'User-Agent': 'Mozilla/5.0'}
-        )
+        r = requests.get("https://api.hackertarget.com/hostsearch/?q=myshopify.com", timeout=12)
         if r.status_code == 200:
-            found = 0
             for line in r.text.strip().split('\n'):
                 h = line.split(',')[0].strip().lower()
                 if h.endswith('.myshopify.com') and '*' not in h:
                     sub = h.replace('.myshopify.com', '')
                     if subdomain_matches(sub):
                         all_urls.add(f"https://{h}")
-                        found += 1
-            log(f"   HackerTarget: +{found} stores", "INFO")
-    except Exception as e:
-        log(f"   HackerTarget error: {e}", "WARN")
+    except: pass
 
     urls_list = list(all_urls)
     random.shuffle(urls_list)
-    log(f"📦 Total: {len(urls_list)} '{keyword}' stores found to test!", "INFO")
+    log(f"📦 Total: {len(urls_list)} stores found to test!", "INFO")
     return urls_list
 
 
-# ── 2. STRICT CHECKOUT TEST (same as working code) ────────────────────────────
-def check_store_target(base_url, session):
+# ── 2. STRICT CHECKOUT TEST ───────────────────────────────────────────────────
+def check_store_target(base_url, session, keyword):
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
     headers = {
@@ -228,9 +176,14 @@ def check_store_target(base_url, session):
         html = r.text.lower()
         if 'shopify' not in html and 'cdn.shopify.com' not in html:
             return {"is_shopify": False, "is_lead": False}
+
+        # 🚨 FIX: NICHE CHECK ON HOMEPAGE
+        kw_lower = keyword.lower().strip()
+        if kw_lower and kw_lower not in html:
+            return {"is_shopify": True, "is_lead": False, "reason": "Keyword missing"}
             
         if '/password' in r.url or 'password-page' in html or 'opening soon' in html:
-            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping as requested)"}
+            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected"}
 
         try:
             prod_req = session.get(f"{base_url}/products.json?limit=1", headers=headers, timeout=10)
@@ -261,7 +214,7 @@ def check_store_target(base_url, session):
                     
                     return {"is_shopify": True, "is_lead": True, "reason": "No Payment Options Found on Checkout!"}
                     
-            return {"is_shopify": True, "is_lead": False, "reason": "Could not test checkout (No products to add)"}
+            return {"is_shopify": True, "is_lead": False, "reason": "Could not test checkout (No products)"}
             
         except Exception as e:
             return {"is_shopify": True, "is_lead": False, "reason": "Checkout test failed"}
@@ -269,7 +222,7 @@ def check_store_target(base_url, session):
     except Exception as e:
         return {"is_shopify": False, "is_lead": False}
 
-# ── Store info extraction (same as working code) ──────────────────────────────
+# ── Store info extraction ─────────────────────────────────────────────────────
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 SKIP_EMAIL_DOMAINS = ['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg', '.svg', 'noreply', 'domain.com']
 PHONE_RE = re.compile(r'(\+\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4})')
@@ -329,7 +282,7 @@ def get_store_info(base_url, session):
         log(f"Info extraction error: {e}", "WARN")
     return result
 
-# ── AI Email generation (same as working code) ────────────────────────────────
+# ── AI Email generation ───────────────────────────────────────────────────────
 def generate_email(tpl_subject, tpl_body, lead, groq_key):
     try:
         client = Groq(api_key=groq_key)
@@ -368,7 +321,7 @@ Respond ONLY with valid JSON, nothing else:
         log(f"Groq error ({e}) — using template", "WARN")
         return tpl_subject, f'<p>{tpl_body}</p>'
 
-# ── Main automation (same as working code) ────────────────────────────────────
+# ── Main automation ───────────────────────────────────────────────────────────
 def run_automation():
     global automation_running
     automation_running = True
@@ -437,7 +390,8 @@ def _run():
         keyword = kw_row.get('keyword', '')
         country = kw_row.get('country', '')
         kw_id   = kw_row.get('id', '')
-        kw_leads = 0
+        
+        kw_leads = rej_pay = rej_other = rej_keyword = 0
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
@@ -454,21 +408,32 @@ def _run():
 
         log(f"🔍 Checking {len(store_urls)} stores for payment gateways...", "INFO")
 
-        for url in store_urls:
+        for idx, url in enumerate(store_urls):
             if not automation_running:
                 break
             if total_leads >= min_leads:
                 break
 
             try:
-                target_info = check_store_target(url, session)
+                target_info = check_store_target(url, session, keyword)
 
                 if not target_info.get("is_shopify"):
                     continue
 
                 if not target_info.get("is_lead"):
-                    log(f"   🚫 REJECTED: {target_info.get('reason')} - {url}", "WARN")
-                    time.sleep(0.5)
+                    reason = target_info.get('reason', '')
+                    
+                    # 🚨 FIX: Terminal Log Spam Prevention
+                    if "Keyword missing" in reason:
+                        rej_keyword += 1
+                    elif any(w in reason.lower() for w in ['has:', 'payment', 'visa', 'stripe', 'active checkout']):
+                        rej_pay += 1
+                    else:
+                        rej_other += 1
+                        
+                    processed_count = idx + 1
+                    if processed_count % 10 == 0:
+                        log(f"   ⚡ Progress: [{processed_count}/{len(store_urls)}] Checked | Niche Mismatch: {rej_keyword} | Paid: {rej_pay}", "INFO")
                     continue
 
                 log(f"   🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
@@ -547,34 +512,43 @@ def _run():
     log("🎉 ALL DONE! Check your Google Sheet for leads.", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
-# ── Flask routes (same as working code) ──────────────────────────────────────
+# ── Flask routes ──────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
     return render_template('index.html')
 
 @app.route('/api/status')
 def api_status():
+    global last_status_fetch, cached_status
     script_url = os.environ.get('APPS_SCRIPT_URL', '')
-    total_leads = emails_sent = kw_total = kw_used = 0
-    if script_url:
+    
+    # 🚨 FIX: Dashboard will only fetch data from Google Sheets once every 60 seconds
+    if script_url and (time.time() - last_status_fetch > 60):
         try:
-            lr = call_sheet({'action': 'get_leads'})
-            leads = lr.get('leads', [])
-            total_leads = len(leads)
-            emails_sent = sum(1 for l in leads if l.get('email_sent') == 'sent')
-            kr = call_sheet({'action': 'get_keywords'})
-            kws = kr.get('keywords', [])
-            kw_total = len(kws)
-            kw_used  = sum(1 for k in kws if k.get('status') == 'used')
+            # Using direct requests instead of call_sheet to prevent "Sheet timeout" logs in terminal
+            r1 = requests.post(script_url, json={'action': 'get_leads'}, timeout=15)
+            if r1.status_code == 200:
+                leads = r1.json().get('leads', [])
+                cached_status['total_leads'] = len(leads)
+                cached_status['emails_sent'] = sum(1 for l in leads if l.get('email_sent') == 'sent')
+            
+            r2 = requests.post(script_url, json={'action': 'get_keywords'}, timeout=15)
+            if r2.status_code == 200:
+                kws = r2.json().get('keywords', [])
+                cached_status['kw_total'] = len(kws)
+                cached_status['kw_used'] = sum(1 for k in kws if k.get('status') == 'used')
+                
+            last_status_fetch = time.time()
         except:
-            pass
+            pass # Fail silently, keep old cache so it doesn't spam logs
+
     return jsonify({
-        'running': automation_running,
-        'total_leads': total_leads,
-        'emails_sent': emails_sent,
-        'kw_total': kw_total,
-        'kw_used': kw_used,
-        'script_connected': bool(script_url),
+        'running': automation_running, 
+        'total_leads': cached_status['total_leads'],
+        'emails_sent': cached_status['emails_sent'], 
+        'kw_total': cached_status['kw_total'],
+        'kw_used': cached_status['kw_used'], 
+        'script_connected': bool(script_url)
     })
 
 @app.route('/api/logs/stream')
