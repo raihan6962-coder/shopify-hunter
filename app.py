@@ -5,17 +5,11 @@ import time
 import json
 import re
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 import logging
 import os
-
-# DuckDuckGo for Unlimited Free Searches
-try:
-    from duckduckgo_search import DDGS
-    DDGS_AVAILABLE = True
-except ImportError:
-    DDGS_AVAILABLE = False
+import urllib.parse
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
@@ -53,93 +47,88 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THE BULLETPROOF 7-DAYS SCRAPER (No Google, No Crashes)
+# THE BULLETPROOF MASSIVE SCRAPER (No crt.sh, No Crashes)
 # ─────────────────────────────────────────────────────────────────────────────
-def get_recent_ssl_stores(keyword):
+def get_massive_store_list(keyword):
     """
-    গত ৭ দিনে তৈরি হওয়া Niche স্টোরগুলো ৪টি ভিন্ন সোর্স থেকে বের করবে।
-    crt.sh ডাউন থাকলেও অন্য সোর্সগুলো ব্যাকআপ হিসেবে কাজ করবে।
+    ৫টি ভিন্ন সোর্স থেকে হাজার হাজার Niche স্টোর বের করবে।
     """
     urls = set()
     kw_clean = keyword.lower().replace(' ', '')
-    seven_days_ago = datetime.now() - timedelta(days=7)
     
-    log(f"🔍 Searching for '{keyword}' stores created in the last 1-7 days...", "INFO")
+    log(f"🔍 Searching 5 Global Databases for '{keyword}' stores...", "INFO")
 
-    # SOURCE 1: DuckDuckGo (Past 7 Days Filter) - 100% Google Free
-    if DDGS_AVAILABLE:
-        log(f"   -> Checking DuckDuckGo (Filtered by Past 7 Days)...", "INFO")
-        try:
-            with DDGS() as ddgs:
-                # timelimit='w' মানে শুধু গত ১ সপ্তাহের (Past Week) রেজাল্ট আনবে
-                results = ddgs.text(f'site:myshopify.com "{keyword}"', timelimit='w', max_results=200)
-                if results:
-                    for r in results:
-                        m = MYSHOPIFY_RE.search(r.get('href', ''))
-                        if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-        except Exception as e:
-            log(f"   DuckDuckGo error: {e}", "WARN")
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
-    # SOURCE 2: CertSpotter (Newly minted SSL certs)
-    log(f"   -> Checking CertSpotter (Recent SSL Certificates)...", "INFO")
+    # SOURCE 1: URLScan.io (Recent Stores)
+    log(f"   -> Checking URLScan (Recently scanned stores)...", "INFO")
     try:
-        r = requests.get(
-            'https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', 
-            timeout=15
-        )
-        if r.status_code == 200:
-            for cert in r.json():
-                for name in cert.get('dns_names', []):
-                    if name.endswith('.myshopify.com') and kw_clean in name.lower():
-                        urls.add(f"https://{name}")
-    except Exception as e:
-        pass
-
-    # SOURCE 3: URLScan.io (Strictly Past 7 Days)
-    log(f"   -> Checking URLScan (Scanned in the last 7 days)...", "INFO")
-    try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND date:>now-7d&size=1000"
+        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=1000&sort=time"
         r = requests.get(urlscan_url, timeout=15)
         if r.status_code == 200:
             for res in r.json().get('results', []):
                 page_url = res.get('page', {}).get('url', '')
                 m = MYSHOPIFY_RE.search(page_url)
-                if m and kw_clean in m.group(1).lower():
-                    urls.add(f"https://{m.group(1)}.myshopify.com")
+                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
     except Exception as e:
         pass
 
-    # SOURCE 4: crt.sh (With 502 Crash Protection)
-    log(f"   -> Checking crt.sh SSL Logs...", "INFO")
+    # SOURCE 2: AlienVault OTX (Passive DNS - Huge Database)
+    log(f"   -> Checking AlienVault OTX (Global DNS Records)...", "INFO")
     try:
-        r = requests.get(
-            f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", 
-            timeout=15,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        )
+        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
         if r.status_code == 200:
-            try:
-                for cert in r.json():
-                    date_str = cert.get('not_before', '')
-                    if date_str:
-                        try:
-                            cert_date = datetime.strptime(date_str.split('T')[0], '%Y-%m-%d')
-                            if cert_date >= seven_days_ago:
-                                name = cert.get('common_name', '') or cert.get('name_value', '')
-                                for n in name.split('\n'):
-                                    m = MYSHOPIFY_RE.search(n)
-                                    if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-                        except Exception:
-                            pass
-            except ValueError:
-                log(f"   crt.sh is down (502 Bad Gateway). Skipping safely.", "WARN")
-        else:
-            log(f"   crt.sh returned status {r.status_code}. Skipping safely.", "WARN")
+            for entry in r.json().get('passive_dns', []):
+                h = entry.get('hostname', '').lower()
+                if h.endswith('.myshopify.com') and kw_clean in h:
+                    urls.add(f"https://{h}")
     except Exception as e:
-        log(f"   crt.sh connection timeout. Skipping safely.", "WARN")
+        pass
+
+    # SOURCE 3: HackerTarget (Subdomain Scanner)
+    log(f"   -> Checking HackerTarget...", "INFO")
+    try:
+        r = requests.get("https://api.hackertarget.com/hostsearch/?q=myshopify.com", timeout=15)
+        if r.status_code == 200:
+            for line in r.text.split('\n'):
+                h = line.split(',')[0].lower()
+                if h.endswith('.myshopify.com') and kw_clean in h:
+                    urls.add(f"https://{h}")
+    except Exception as e:
+        pass
+
+    # SOURCE 4 & 5: Yahoo & AOL Search (Unblockable Search Engines)
+    log(f"   -> Checking Yahoo & AOL for 'Opening Soon' stores...", "INFO")
+    queries = [
+        f'site:myshopify.com "{keyword}" "opening soon"',
+        f'site:myshopify.com "{keyword}" "password"',
+        f'site:myshopify.com "{keyword}" "welcome to our store"',
+        f'site:myshopify.com intitle:"{keyword}"'
+    ]
+    
+    for q in queries:
+        if len(urls) > 2000: break
+        encoded_q = urllib.parse.quote_plus(q)
+        # Yahoo
+        try:
+            r = requests.get(f"https://search.yahoo.com/search?p={encoded_q}&n=100", headers=headers, timeout=10)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for a in soup.find_all('a', href=True):
+                m = MYSHOPIFY_RE.search(a['href'])
+                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+        except: pass
+        # AOL
+        try:
+            r = requests.get(f"https://search.aol.com/aol/search?q={encoded_q}", headers=headers, timeout=10)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for a in soup.find_all('a', href=True):
+                m = MYSHOPIFY_RE.search(a['href'])
+                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+        except: pass
+        time.sleep(1)
 
     urls_list = list(urls)
-    log(f"📦 Found {len(urls_list)} VERIFIED NEW stores (1-7 days old) for '{keyword}'!", "SUCCESS")
+    log(f"📦 Found {len(urls_list)} RAW stores for '{keyword}'!", "SUCCESS")
     return urls_list
 
 
@@ -175,7 +164,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — SIMPLE 7-DAYS SCRAPER (NO GOOGLE)", "SUCCESS")
+    log("🚀 PHASE 1 — MASSIVE NICHE STORE SCRAPER", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     for kw_row in ready_kws:
@@ -190,22 +179,27 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # 1. Scrape only 1-7 days old stores from 4 sources
-        store_urls = get_recent_ssl_stores(keyword)
+        # 1. Scrape thousands of stores
+        store_urls = get_massive_store_list(keyword)
 
         if not store_urls:
-            log("⚠️  No new stores found in the last 7 days for this keyword.", "WARN")
+            log("⚠️  No stores found for this keyword.", "WARN")
             call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
             continue
 
-        log(f"💾 Saving {len(store_urls)} stores directly to Google Sheet...", "INFO")
+        log(f"💾 Checking if stores are alive and saving directly to Google Sheet...", "INFO")
 
-        # 2. Save directly to sheet (No checkout check, no inside scraping)
+        # 2. Check if alive and Save directly to sheet
         for url in store_urls:
             if not automation_running: break
             if total_leads >= min_leads: break
 
             try:
+                # Quick check to see if the store is actually alive (Timeout 5s)
+                r = requests.get(url, timeout=5)
+                if r.status_code != 200 or 'shopify' not in r.text.lower():
+                    continue # Dead store, skip it
+
                 # Extract a clean store name from URL
                 store_name = url.replace('https://', '').replace('.myshopify.com', '').replace('-', ' ').title()
 
@@ -213,7 +207,7 @@ def _run():
                     'action': 'save_lead', 
                     'store_name': store_name,
                     'url': url, 
-                    'email': 'N/A (Scrape Only)', # No email scraping
+                    'email': 'N/A (Scrape Only)', 
                     'phone': 'N/A', 
                     'country': country, 
                     'keyword': keyword
@@ -227,7 +221,7 @@ def _run():
                 total_leads += 1
                 kw_leads += 1
                 log(f"   ✅ SAVED #{total_leads} → {url}", "SUCCESS")
-                time.sleep(0.5) # Fast saving
+                time.sleep(0.5)
 
             except Exception as e:
                 continue
