@@ -12,13 +12,6 @@ from datetime import datetime
 import logging
 import os
 
-# DuckDuckGo for Unlimited Free Searches
-try:
-    from duckduckgo_search import DDGS
-    DDGS_AVAILABLE = True
-except ImportError:
-    DDGS_AVAILABLE = False
-
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
@@ -55,77 +48,75 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THE CRASH-PROOF MASSIVE SCRAPER (No HackerTarget, No crt.sh)
+# THE "NEVER ZERO" SCRAPER (Brute-Force + APIs)
 # ─────────────────────────────────────────────────────────────────────────────
 def get_massive_store_list(keyword, country, serpapi_key):
     urls = set()
-    kw_clean = keyword.lower().replace(' ', '')
+    kw_clean = keyword.lower().replace(' ', '').replace('-', '')
     
-    log(f"🔍 Searching 4 Global Databases for '{keyword}' stores...", "INFO")
+    log(f"🚀 HYBRID MODE: Generating & Scraping stores for '{keyword}'...", "INFO")
 
-    # SOURCE 1: URLScan.io (Fast & Stable)
-    log(f"   -> Checking URLScan (Recently scanned stores)...", "INFO")
+    # ── METHOD 1: SMART BRUTE-FORCE (Guarantees URLs to test) ──
+    log(f"   -> Generating targeted store links...", "INFO")
+    prefixes = ['', 'my', 'the', 'shop', 'buy', 'best', 'new', 'official', 'top', 'pro', 'all']
+    suffixes = ['', 'shop', 'store', 'online', 'co', 'boutique', 'hub', 'spot', 'deals', 'mart']
+    
+    for p in prefixes:
+        for s in suffixes:
+            urls.add(f"https://{p}{kw_clean}{s}.myshopify.com")
+            urls.add(f"https://{kw_clean}{p}{s}.myshopify.com")
+            if p and s:
+                urls.add(f"https://{p}-{kw_clean}-{s}.myshopify.com")
+
+    # ── METHOD 2: crt.sh (Specific Query to avoid 502 Crash) ──
+    log(f"   -> Checking crt.sh (SSL Logs)...", "INFO")
     try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=500&sort=time"
-        # Timeout 10 seconds. If it hangs, it will skip safely.
-        r = requests.get(urlscan_url, timeout=10)
+        r = requests.get(f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", timeout=15)
+        if r.status_code == 200:
+            for cert in r.json():
+                name = cert.get('common_name', '') or cert.get('name_value', '')
+                for n in name.split('\n'):
+                    m = MYSHOPIFY_RE.search(n)
+                    if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+    except Exception:
+        pass
+
+    # ── METHOD 3: URLScan.io (Broad Search) ──
+    log(f"   -> Checking URLScan...", "INFO")
+    try:
+        r = requests.get("https://urlscan.io/api/v1/search/?q=domain:myshopify.com&size=1000&sort=time", timeout=15)
         if r.status_code == 200:
             for res in r.json().get('results', []):
                 page_url = res.get('page', {}).get('url', '')
                 m = MYSHOPIFY_RE.search(page_url)
-                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception as e:
-        log(f"   URLScan skipped (Timeout/Error)", "WARN")
+                if m and kw_clean in m.group(1).lower():
+                    urls.add(f"https://{m.group(1)}.myshopify.com")
+    except Exception:
+        pass
 
-    # SOURCE 2: AlienVault OTX (Passive DNS)
-    log(f"   -> Checking AlienVault OTX (Global DNS Records)...", "INFO")
-    try:
-        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=10)
-        if r.status_code == 200:
-            for entry in r.json().get('passive_dns', []):
-                h = entry.get('hostname', '').lower()
-                if h.endswith('.myshopify.com') and kw_clean in h:
-                    urls.add(f"https://{h}")
-    except Exception as e:
-        log(f"   AlienVault skipped (Timeout/Error)", "WARN")
-
-    # SOURCE 3: SerpAPI (Google - Past Month Filter)
+    # ── METHOD 4: SerpAPI (Broad Queries, No strict time limits) ──
     if serpapi_key:
-        log(f"   -> Checking Google (Past Month) via SerpAPI...", "INFO")
+        log(f"   -> Checking Google via SerpAPI...", "INFO")
         queries = [
-            f'site:myshopify.com "{keyword}" {country}',
-            f'site:myshopify.com "{keyword}" "opening soon"',
-            f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"'
+            f'site:myshopify.com "{keyword}"',
+            f'site:myshopify.com intitle:"{keyword}"',
+            f'site:myshopify.com inurl:{kw_clean}'
         ]
         for q in queries:
-            if len(urls) > 1000: break
-            for start in [0, 100]:
-                try:
-                    params = {'api_key': serpapi_key, 'engine': 'google', 'q': q, 'num': 100, 'start': start, 'tbs': 'qdr:m'}
-                    res = requests.get('https://serpapi.com/search', params=params, timeout=15)
-                    if res.status_code == 200:
-                        for item in res.json().get('organic_results', []):
-                            m = MYSHOPIFY_RE.search(item.get('link', ''))
-                            if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-                except Exception: pass
-                time.sleep(1)
-
-    # SOURCE 4: DuckDuckGo (Python Package - Past Month Filter)
-    if DDGS_AVAILABLE:
-        log(f"   -> Checking DuckDuckGo (Past Month)...", "INFO")
-        try:
-            with DDGS() as ddgs:
-                results = ddgs.text(f'site:myshopify.com "{keyword}"', timelimit='m', max_results=200)
-                if results:
-                    for r in results:
-                        m = MYSHOPIFY_RE.search(r.get('href', ''))
+            if len(urls) > 1500: break
+            try:
+                params = {'api_key': serpapi_key, 'engine': 'google', 'q': q, 'num': 100}
+                res = requests.get('https://serpapi.com/search', params=params, timeout=15)
+                if res.status_code == 200:
+                    for item in res.json().get('organic_results', []):
+                        m = MYSHOPIFY_RE.search(item.get('link', ''))
                         if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-        except Exception as e:
-            log(f"   DuckDuckGo skipped (Timeout/Error)", "WARN")
+            except Exception: pass
+            time.sleep(1)
 
     urls_list = list(urls)
     random.shuffle(urls_list)
-    log(f"📦 Found {len(urls_list)} RAW stores for '{keyword}'!", "SUCCESS")
+    log(f"📦 Generated & Scraped {len(urls_list)} potential stores to test!", "SUCCESS")
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -141,18 +132,14 @@ def check_store_target(base_url, session, keyword):
     }
 
     try:
-        r = session.get(base_url, headers=headers, timeout=10, allow_redirects=True)
+        # Step 1: Check if the generated URL actually exists
+        r = session.get(base_url, headers=headers, timeout=8, allow_redirects=True)
         if r.status_code != 200:
             return {"is_shopify": False, "is_lead": False}
             
         html_lower = r.text.lower()
         if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
             return {"is_shopify": False, "is_lead": False}
-
-        # 🚨 NICHE CHECK
-        kw_lower = keyword.lower().strip()
-        if kw_lower and kw_lower not in html_lower and kw_lower not in base_url:
-            return {"is_shopify": True, "is_lead": False, "reason": f"Keyword '{kw_lower}' not found"}
 
         # 🚨 PASSWORD CHECK
         if '/password' in r.url or 'password-page' in html_lower or 'opening soon' in html_lower:
@@ -241,6 +228,33 @@ def get_store_info(base_url, session):
         except: continue
     return result
 
+# ── AI Email generation ───────────────────────────────────────────────────────
+def generate_email(tpl_subject, tpl_body, lead, groq_key):
+    try:
+        prompt = f"""Write a short cold email to a Shopify store owner.
+Store: {lead.get('store_name', 'the store')}
+Country: {lead.get('country', '')}
+Problem: NO payment gateway configured.
+Base: Subject: {tpl_subject} | Body: {tpl_body}
+Rules: 80-100 words, no spam words, mention store name once, 1 soft CTA, HTML <p> tags
+Return ONLY valid JSON: {{"subject": "...", "body": "<p>...</p>"}}"""
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+            json={"model": "llama-3.1-8b-instant",
+                  "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": 500, "temperature": 0.7},
+            timeout=20)
+        if r.status_code == 200:
+            raw = r.json()['choices'][0]['message']['content']
+            raw = re.sub(r'```(?:json)?|```', '', raw.strip()).strip()
+            raw = raw.replace('\n', ' ').replace('\r', '')
+            data = json.loads(raw, strict=False)
+            return data.get('subject', tpl_subject), data.get('body', f'<p>{tpl_body}</p>')
+    except Exception as e:
+        log(f"Groq fallback: {e}", "WARN")
+    return tpl_subject, f'<p>{tpl_body}</p>'
+
 # ── Main automation ───────────────────────────────────────────────────────────
 def run_automation():
     global automation_running
@@ -262,6 +276,7 @@ def _run():
 
     cfg = cfg_resp.get('config', {})
     serpapi_key = cfg.get('serpapi_key', '').strip()
+    groq_key = cfg.get('groq_api_key', '').strip()
     min_leads = int(cfg.get('min_leads', 50) or 50)
 
     kw_resp = call_sheet({'action': 'get_keywords'})
@@ -274,7 +289,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — MASSIVE NICHE STORE SCRAPER", "SUCCESS")
+    log("🚀 PHASE 1 — NEVER-ZERO SCRAPER & CHECKOUT TEST", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     for kw_row in ready_kws:
@@ -289,17 +304,16 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # 1. Scrape thousands of stores (Crash Proof)
+        # 1. Generate & Scrape stores
         store_urls = get_massive_store_list(keyword, country, serpapi_key)
 
         if not store_urls:
-            log("⚠️  No stores found for this keyword.", "WARN")
+            log("⚠️  No stores found. Moving to next...", "WARN")
             call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
             continue
 
-        log(f"🔍 Filtering {len(store_urls)} stores for keyword '{keyword}' and checking payments...", "INFO")
+        log(f"🔍 Checking {len(store_urls)} stores for payment gateways...", "INFO")
 
-        # 2. Check Checkout HTML and Save Lead
         for idx, url in enumerate(store_urls):
             if not automation_running: break
             if total_leads >= min_leads: break
@@ -314,7 +328,6 @@ def _run():
                     reason = target_info.get('reason', '')
                     if "Keyword" not in reason:
                         log(f"   [{idx+1}/{len(store_urls)}] 🚫 SKIP ({reason}) — {url}", "WARN")
-                    time.sleep(0.2)
                     continue
 
                 # ✅ LEAD FOUND!
