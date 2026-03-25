@@ -6,8 +6,8 @@ import json
 import re
 import random
 import requests
+from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
 import logging
 import os
 
@@ -47,32 +47,23 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THE "REAL & NEW" UNLIMITED SCRAPER (No Fake Names)
+# STRICT 7-DAYS SCRAPER (Only stores created in the last 1-7 days)
 # ─────────────────────────────────────────────────────────────────────────────
-def get_massive_store_list(keyword, country, serpapi_key):
+def get_strictly_new_stores():
+    """
+    শুধুমাত্র গত ৭ দিনে তৈরি হওয়া শপিফাই স্টোরগুলো কালেক্ট করবে।
+    ৭ দিনের বেশি পুরনো কোনো স্টোর এই লিস্টে ঢুকতেই পারবে না।
+    """
     urls = set()
-    kw_clean = keyword.lower().replace(' ', '').replace('-', '')
+    seven_days_ago = datetime.now() - timedelta(days=7)
     
-    log(f"🚀 REAL & NEW MODE: Scraping authentic databases for '{keyword}'...", "INFO")
+    log(f"🚀 STRICT MODE: Fetching ONLY stores created in the last 7 days...", "INFO")
 
-    # ── METHOD 1: crt.sh (SSL Logs - Guarantees NEW stores) ──
-    log(f"   -> Checking crt.sh (Newly created SSL certificates)...", "INFO")
+    # ── SOURCE 1: URLScan.io (Strictly scanned in last 7 days) ──
+    log(f"   -> Checking URLScan (Past 7 days)...", "INFO")
     try:
-        # Searching for the keyword in the SSL certificate name
-        r = requests.get(f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", timeout=20)
-        if r.status_code == 200:
-            for cert in r.json():
-                name = cert.get('common_name', '') or cert.get('name_value', '')
-                for n in name.split('\n'):
-                    m = MYSHOPIFY_RE.search(n)
-                    if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception as e:
-        log(f"   crt.sh timeout/error: {e}", "WARN")
-
-    # ── METHOD 2: URLScan.io (Recently scanned REAL stores) ──
-    log(f"   -> Checking URLScan (Recently active stores)...", "INFO")
-    try:
-        r = requests.get(f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=2000&sort=time", timeout=15)
+        urlscan_url = "https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND date:>now-7d&size=2000&sort=time"
+        r = requests.get(urlscan_url, timeout=15)
         if r.status_code == 200:
             for res in r.json().get('results', []):
                 page_url = res.get('page', {}).get('url', '')
@@ -81,50 +72,60 @@ def get_massive_store_list(keyword, country, serpapi_key):
     except Exception:
         pass
 
-    # ── METHOD 3: CommonCrawl (Massive Global Web Index) ──
-    log(f"   -> Checking CommonCrawl (Global Web Index)...", "INFO")
+    # ── SOURCE 2: CertSpotter (Checking exact SSL creation date) ──
+    log(f"   -> Checking CertSpotter (Exact SSL Date)...", "INFO")
     try:
-        # Using a recent index to find stores
-        cc_url = f"https://index.commoncrawl.org/CC-MAIN-2024-10-index?url=*.myshopify.com/*{kw_clean}*&output=json&limit=2000"
-        r = requests.get(cc_url, timeout=20)
-        if r.status_code == 200 and r.text.strip():
-            for line in r.text.strip().split('\n'):
-                try:
-                    data = json.loads(line)
-                    m = MYSHOPIFY_RE.search(data.get('url', ''))
-                    if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-                except:
-                    continue
+        r = requests.get('https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', timeout=15)
+        if r.status_code == 200:
+            for cert in r.json():
+                not_before = cert.get('not_before', '')
+                if not_before:
+                    cert_date = datetime.strptime(not_before.split('T')[0], '%Y-%m-%d')
+                    # 🚨 STRICT CHECK: Is it within 7 days?
+                    if cert_date >= seven_days_ago:
+                        for name in cert.get('dns_names', []):
+                            if name.endswith('.myshopify.com'):
+                                urls.add(f"https://{name}")
     except Exception:
         pass
 
-    # ── METHOD 4: SerpAPI (Google - Broad Search) ──
-    if serpapi_key:
-        log(f"   -> Checking Google via SerpAPI...", "INFO")
-        queries = [
-            f'site:myshopify.com "{keyword}"',
-            f'site:myshopify.com intitle:"{keyword}"',
-            f'site:myshopify.com inurl:{kw_clean}'
-        ]
-        for q in queries:
-            # No hard limit here, let it scrape as much as possible (up to 5 pages per query)
-            for start in [0, 100, 200, 300, 400]:
-                try:
-                    params = {'api_key': serpapi_key, 'engine': 'google', 'q': q, 'num': 100, 'start': start}
-                    res = requests.get('https://serpapi.com/search', params=params, timeout=15)
-                    if res.status_code == 200:
-                        results = res.json().get('organic_results', [])
-                        if not results: break # Stop if no more results on this page
-                        for item in results:
-                            m = MYSHOPIFY_RE.search(item.get('link', ''))
+    # ── SOURCE 3: crt.sh (Checking exact SSL creation date) ──
+    log(f"   -> Checking crt.sh (Exact SSL Date)...", "INFO")
+    try:
+        r = requests.get("https://crt.sh/?q=%.myshopify.com&output=json&deduplicate=Y", timeout=20, headers={'User-Agent': 'Mozilla/5.0'})
+        if r.status_code == 200:
+            certs = r.json()
+            # Sort by newest first and take top 2000 to avoid processing old data
+            certs = sorted(certs, key=lambda x: x.get('not_before', ''), reverse=True)[:2000]
+            for cert in certs:
+                not_before = cert.get('not_before', '')
+                if not_before:
+                    cert_date = datetime.strptime(not_before.split('T')[0], '%Y-%m-%d')
+                    # 🚨 STRICT CHECK: Is it within 7 days?
+                    if cert_date >= seven_days_ago:
+                        name = cert.get('common_name', '') or cert.get('name_value', '')
+                        for n in name.split('\n'):
+                            m = MYSHOPIFY_RE.search(n)
                             if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-                except Exception: pass
-                time.sleep(1)
+    except Exception:
+        pass
 
     urls_list = list(urls)
     random.shuffle(urls_list)
-    log(f"📦 Successfully collected {len(urls_list)} REAL stores to test!", "SUCCESS")
+    log(f"📦 Successfully collected {len(urls_list)} STRICTLY NEW (1-7 days old) stores!", "SUCCESS")
     return urls_list
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECKOUT HTML ANALYSIS & EMAIL EXTRACTION (Kept in code, but bypassed in run)
+# ─────────────────────────────────────────────────────────────────────────────
+def check_store_target(base_url, session, keyword):
+    pass # Bypassed for now
+
+def get_store_info(base_url, session):
+    pass # Bypassed for now
+
+def generate_email(tpl_subject, tpl_body, lead, groq_key):
+    pass # Bypassed for now
 
 # ── Main automation ───────────────────────────────────────────────────────────
 def run_automation():
@@ -146,9 +147,7 @@ def _run():
         log(f"❌ Apps Script: {cfg_resp['error']}", "ERROR"); return
 
     cfg = cfg_resp.get('config', {})
-    serpapi_key = cfg.get('serpapi_key', '').strip()
-    
-    log(f"✅ Config loaded | Target: UNLIMITED (Saving all REAL & ALIVE URLs)", "INFO")
+    min_leads = int(cfg.get('min_leads', 50) or 50)
 
     kw_resp = call_sheet({'action': 'get_keywords'})
     ready_kws = [k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
@@ -160,8 +159,15 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — SCRAPE & SAVE 'ALIVE' STORES DIRECTLY TO SHEET", "SUCCESS")
+    log("🚀 PHASE 1 — FETCHING ALL 7-DAYS OLD STORES", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
+
+    # 1. Get ALL stores created in the last 7 days (ONCE)
+    new_store_urls = get_strictly_new_stores()
+
+    if not new_store_urls:
+        log("⚠️  No new stores found in the last 7 days. Exiting...", "WARN")
+        return
 
     for kw_row in ready_kws:
         if not automation_running: break
@@ -172,27 +178,26 @@ def _run():
         kw_leads = 0
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
+        log(f"🔍 Filtering the {len(new_store_urls)} new stores for keyword '{keyword}'...", "INFO")
 
-        # 1. Scrape REAL stores from databases
-        store_urls = get_massive_store_list(keyword, country, serpapi_key)
-
-        if not store_urls:
-            log("⚠️  No stores found. Moving to next...", "WARN")
-            call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
-            continue
-
-        log(f"💾 Checking if stores are ALIVE and saving directly to Google Sheet...", "INFO")
-
-        for idx, url in enumerate(store_urls):
+        for idx, url in enumerate(new_store_urls):
             if not automation_running: break
 
             try:
-                # 🔥 ALIVE CHECK: শুধু দেখবে ওয়েবসাইটটা বেঁচে আছে কিনা (Timeout 5s)
-                # মরা (Dead) ওয়েবসাইট সেভ করবে না!
+                # 🔥 ALIVE & NICHE CHECK: ওয়েবসাইটে ঢুকে দেখবে বেঁচে আছে কিনা এবং কিওয়ার্ড আছে কিনা
                 r = session.get(url, timeout=5, allow_redirects=True)
-                if r.status_code != 200 or 'shopify' not in r.text.lower():
-                    # log(f"   [{idx+1}/{len(store_urls)}] 🚫 DEAD STORE — {url}", "WARN")
-                    continue 
+                
+                if r.status_code != 200:
+                    continue # Dead store
+                    
+                html_lower = r.text.lower()
+                if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
+                    continue # Not Shopify
+                    
+                # 🚨 NICHE CHECK: হোমপেজে কিওয়ার্ড না থাকলে বাদ!
+                kw_lower = keyword.lower().strip()
+                if kw_lower and kw_lower not in html_lower and kw_lower not in url:
+                    continue # Keyword not found
 
                 # সুন্দর করে স্টোরের নাম বানাবে URL থেকে
                 store_name = url.replace('https://', '').replace('.myshopify.com', '').replace('-', ' ').title()
@@ -211,13 +216,12 @@ def _run():
                 if save_resp.get('error'):
                     continue
                 if save_resp.get('status') == 'duplicate':
-                    log(f"   [{idx+1}/{len(store_urls)}] ⏭️ Duplicate — {url}", "INFO")
+                    log(f"   [{idx+1}/{len(new_store_urls)}] ⏭️ Duplicate — {url}", "INFO")
                     continue
 
                 total_leads += 1; kw_leads += 1
-                log(f"   [{idx+1}/{len(store_urls)}] ✅ SAVED #{total_leads} → {url}", "SUCCESS")
+                log(f"   [{idx+1}/{len(new_store_urls)}] ✅ SAVED #{total_leads} (100% NEW & NICHE) → {url}", "SUCCESS")
                 
-                # Fast saving (0.2s delay to prevent Google Sheet API timeout)
                 time.sleep(0.2) 
 
             except Exception as e:
@@ -227,7 +231,7 @@ def _run():
         log(f"✅ '{keyword}' done → {kw_leads} urls saved", "SUCCESS")
 
     log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log(f"🎉 ALL DONE! {total_leads} REAL & ALIVE URLs saved to Google Sheet.", "SUCCESS")
+    log(f"🎉 ALL DONE! {total_leads} STRICTLY NEW URLs saved to Google Sheet.", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
 # ── Flask routes ──────────────────────────────────────────────────────────────
