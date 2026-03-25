@@ -48,7 +48,7 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THE "NEVER ZERO" SCRAPER (Brute-Force + APIs)
+# THE "NEVER ZERO" SCRAPER (Brute-Force + APIs) - UNTOUCHED & WORKING PERFECTLY
 # ─────────────────────────────────────────────────────────────────────────────
 def get_massive_store_list(keyword, country, serpapi_key):
     urls = set()
@@ -56,7 +56,7 @@ def get_massive_store_list(keyword, country, serpapi_key):
     
     log(f"🚀 HYBRID MODE: Generating & Scraping stores for '{keyword}'...", "INFO")
 
-    # ── METHOD 1: SMART BRUTE-FORCE (Guarantees URLs to test) ──
+    # ── METHOD 1: SMART BRUTE-FORCE ──
     log(f"   -> Generating targeted store links...", "INFO")
     prefixes = ['', 'my', 'the', 'shop', 'buy', 'best', 'new', 'official', 'top', 'pro', 'all']
     suffixes = ['', 'shop', 'store', 'online', 'co', 'boutique', 'hub', 'spot', 'deals', 'mart']
@@ -68,7 +68,7 @@ def get_massive_store_list(keyword, country, serpapi_key):
             if p and s:
                 urls.add(f"https://{p}-{kw_clean}-{s}.myshopify.com")
 
-    # ── METHOD 2: crt.sh (Specific Query to avoid 502 Crash) ──
+    # ── METHOD 2: crt.sh ──
     log(f"   -> Checking crt.sh (SSL Logs)...", "INFO")
     try:
         r = requests.get(f"https://crt.sh/?q=%25{kw_clean}%25.myshopify.com&output=json", timeout=15)
@@ -81,7 +81,7 @@ def get_massive_store_list(keyword, country, serpapi_key):
     except Exception:
         pass
 
-    # ── METHOD 3: URLScan.io (Broad Search) ──
+    # ── METHOD 3: URLScan.io ──
     log(f"   -> Checking URLScan...", "INFO")
     try:
         r = requests.get("https://urlscan.io/api/v1/search/?q=domain:myshopify.com&size=1000&sort=time", timeout=15)
@@ -94,7 +94,7 @@ def get_massive_store_list(keyword, country, serpapi_key):
     except Exception:
         pass
 
-    # ── METHOD 4: SerpAPI (Broad Queries, No strict time limits) ──
+    # ── METHOD 4: SerpAPI ──
     if serpapi_key:
         log(f"   -> Checking Google via SerpAPI...", "INFO")
         queries = [
@@ -120,7 +120,7 @@ def get_massive_store_list(keyword, country, serpapi_key):
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHECKOUT HTML ANALYSIS (100% Accurate)
+# CHECKOUT HTML ANALYSIS (UPDATED: Multi-Lingual Support)
 # ─────────────────────────────────────────────────────────────────────────────
 def check_store_target(base_url, session, keyword):
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -163,10 +163,28 @@ def check_store_target(base_url, session, keyword):
             chk_req = session.get(f"{base_url}/checkout", headers=headers, timeout=15, allow_redirects=True)
             chk_html = chk_req.text.lower()
 
-            # Explicit no-payment error
-            for phrase in ["isn't accepting payments", "not accepting payments", "no payment methods", "payment provider hasn't been set up", "this store is unavailable"]:
+            # 🔥 MULTI-LINGUAL NO-PAYMENT ERROR CHECK 🔥
+            # এখন ইংরেজি, জার্মান, ফ্রেঞ্চ, স্প্যানিশ সব ভাষার এরর ধরবে!
+            error_footprints = [
+                # English
+                "isn't accepting payments", "not accepting payments", "no payment methods", 
+                "payment provider hasn't been set up", "this store is unavailable", 
+                "cannot accept payments", "can't accept payments", "checkout is disabled",
+                # German (From your screenshot!)
+                "dieser shop kann zurzeit keine zahlungen akzeptieren", "keine zahlungen akzeptieren",
+                # French
+                "n'accepte pas les paiements", "aucun moyen de paiement",
+                # Spanish
+                "no acepta pagos", "ningún método de pago",
+                # Italian
+                "non accetta pagamenti", "nessun metodo di pagamento",
+                # Dutch
+                "accepteert momenteel geen betalingen"
+            ]
+
+            for phrase in error_footprints:
                 if phrase in chk_html:
-                    return {"is_shopify": True, "is_lead": True, "reason": f"CONFIRMED: '{phrase}'"}
+                    return {"is_shopify": True, "is_lead": True, "reason": f"CONFIRMED NO PAYMENT: '{phrase}'"}
 
             # Payment keywords = HAS payment (REJECT)
             payment_kws = ['visa', 'mastercard', 'amex', 'american express', 'paypal', 'credit card', 'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 'shop pay', 'apple pay', 'google pay']
@@ -177,7 +195,8 @@ def check_store_target(base_url, session, keyword):
             if base_url.replace('https://', '') in chk_req.url and '/checkout' not in chk_req.url:
                 return {"is_shopify": True, "is_lead": True, "reason": "Redirected from checkout = no payment"}
 
-            if any(s in chk_html for s in ['contact information', 'shipping address', 'order summary', 'express checkout', 'your email']):
+            # If we reached checkout and there are NO payment fields at all
+            if any(s in chk_html for s in ['contact information', 'shipping address', 'order summary', 'express checkout', 'your email', 'kontaktinformationen', 'versand']):
                 return {"is_shopify": True, "is_lead": True, "reason": "Checkout OK, no payment options in HTML"}
 
             return {"is_shopify": True, "is_lead": False, "reason": "Inconclusive"}
