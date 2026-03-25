@@ -11,7 +11,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import logging
 import os
-import urllib.parse
 
 # DuckDuckGo for Unlimited Free Searches
 try:
@@ -56,7 +55,7 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THE UNSTOPPABLE SCRAPER (4 Sources, No crt.sh dependency)
+# THE CRASH-PROOF MASSIVE SCRAPER (No HackerTarget, No crt.sh)
 # ─────────────────────────────────────────────────────────────────────────────
 def get_massive_store_list(keyword, country, serpapi_key):
     urls = set()
@@ -64,7 +63,33 @@ def get_massive_store_list(keyword, country, serpapi_key):
     
     log(f"🔍 Searching 4 Global Databases for '{keyword}' stores...", "INFO")
 
-    # SOURCE 1: SerpAPI (Google - Past Month Filter)
+    # SOURCE 1: URLScan.io (Fast & Stable)
+    log(f"   -> Checking URLScan (Recently scanned stores)...", "INFO")
+    try:
+        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=500&sort=time"
+        # Timeout 10 seconds. If it hangs, it will skip safely.
+        r = requests.get(urlscan_url, timeout=10)
+        if r.status_code == 200:
+            for res in r.json().get('results', []):
+                page_url = res.get('page', {}).get('url', '')
+                m = MYSHOPIFY_RE.search(page_url)
+                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+    except Exception as e:
+        log(f"   URLScan skipped (Timeout/Error)", "WARN")
+
+    # SOURCE 2: AlienVault OTX (Passive DNS)
+    log(f"   -> Checking AlienVault OTX (Global DNS Records)...", "INFO")
+    try:
+        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=10)
+        if r.status_code == 200:
+            for entry in r.json().get('passive_dns', []):
+                h = entry.get('hostname', '').lower()
+                if h.endswith('.myshopify.com') and kw_clean in h:
+                    urls.add(f"https://{h}")
+    except Exception as e:
+        log(f"   AlienVault skipped (Timeout/Error)", "WARN")
+
+    # SOURCE 3: SerpAPI (Google - Past Month Filter)
     if serpapi_key:
         log(f"   -> Checking Google (Past Month) via SerpAPI...", "INFO")
         queries = [
@@ -73,7 +98,7 @@ def get_massive_store_list(keyword, country, serpapi_key):
             f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"'
         ]
         for q in queries:
-            if len(urls) > 500: break
+            if len(urls) > 1000: break
             for start in [0, 100]:
                 try:
                     params = {'api_key': serpapi_key, 'engine': 'google', 'q': q, 'num': 100, 'start': start, 'tbs': 'qdr:m'}
@@ -85,7 +110,7 @@ def get_massive_store_list(keyword, country, serpapi_key):
                 except Exception: pass
                 time.sleep(1)
 
-    # SOURCE 2: DuckDuckGo (Past Month Filter)
+    # SOURCE 4: DuckDuckGo (Python Package - Past Month Filter)
     if DDGS_AVAILABLE:
         log(f"   -> Checking DuckDuckGo (Past Month)...", "INFO")
         try:
@@ -96,29 +121,7 @@ def get_massive_store_list(keyword, country, serpapi_key):
                         m = MYSHOPIFY_RE.search(r.get('href', ''))
                         if m: urls.add(f"https://{m.group(1)}.myshopify.com")
         except Exception as e:
-            log(f"   DuckDuckGo error: {e}", "WARN")
-
-    # SOURCE 3: URLScan.io (Recent Stores)
-    log(f"   -> Checking URLScan (Recently scanned stores)...", "INFO")
-    try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=500&sort=time"
-        r = requests.get(urlscan_url, timeout=15)
-        if r.status_code == 200:
-            for res in r.json().get('results', []):
-                m = MYSHOPIFY_RE.search(res.get('page', {}).get('url', ''))
-                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception: pass
-
-    # SOURCE 4: AlienVault OTX (Passive DNS)
-    log(f"   -> Checking AlienVault OTX (Global DNS Records)...", "INFO")
-    try:
-        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
-        if r.status_code == 200:
-            for entry in r.json().get('passive_dns', []):
-                h = entry.get('hostname', '').lower()
-                if h.endswith('.myshopify.com') and kw_clean in h:
-                    urls.add(f"https://{h}")
-    except Exception: pass
+            log(f"   DuckDuckGo skipped (Timeout/Error)", "WARN")
 
     urls_list = list(urls)
     random.shuffle(urls_list)
@@ -129,9 +132,14 @@ def get_massive_store_list(keyword, country, serpapi_key):
 # CHECKOUT HTML ANALYSIS (100% Accurate)
 # ─────────────────────────────────────────────────────────────────────────────
 def check_store_target(base_url, session, keyword):
-    ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
-    headers = {'User-Agent': ua, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9'}
-    
+    ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+          'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
+    headers = {
+        'User-Agent': ua,
+        'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+
     try:
         r = session.get(base_url, headers=headers, timeout=10, allow_redirects=True)
         if r.status_code != 200:
@@ -266,7 +274,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — UNSTOPPABLE SCRAPER & CHECKOUT TEST", "SUCCESS")
+    log("🚀 PHASE 1 — MASSIVE NICHE STORE SCRAPER", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     for kw_row in ready_kws:
@@ -281,7 +289,7 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # 1. Scrape thousands of stores
+        # 1. Scrape thousands of stores (Crash Proof)
         store_urls = get_massive_store_list(keyword, country, serpapi_key)
 
         if not store_urls:
@@ -289,25 +297,28 @@ def _run():
             call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
             continue
 
-        log(f"🔍 Checking {len(store_urls)} stores for payment gateways...", "INFO")
+        log(f"🔍 Filtering {len(store_urls)} stores for keyword '{keyword}' and checking payments...", "INFO")
 
+        # 2. Check Checkout HTML and Save Lead
         for idx, url in enumerate(store_urls):
             if not automation_running: break
             if total_leads >= min_leads: break
 
             try:
-                result = check_store_target(url, session, keyword)
-                if not result.get("is_shopify"): continue
+                target_info = check_store_target(url, session, keyword)
 
-                if not result.get("is_lead"):
-                    reason = result.get('reason', '')
+                if not target_info.get("is_shopify"):
+                    continue 
+
+                if not target_info.get("is_lead"):
+                    reason = target_info.get('reason', '')
                     if "Keyword" not in reason:
                         log(f"   [{idx+1}/{len(store_urls)}] 🚫 SKIP ({reason}) — {url}", "WARN")
-                    time.sleep(0.5)
+                    time.sleep(0.2)
                     continue
 
                 # ✅ LEAD FOUND!
-                log(f"   [{idx+1}/{len(store_urls)}] 🎯 100% MATCH: {result.get('reason')} — collecting info...", "SUCCESS")
+                log(f"   [{idx+1}/{len(store_urls)}] 🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
                 
                 info = get_store_info(url, session)
                 
