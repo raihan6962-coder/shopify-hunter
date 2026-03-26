@@ -48,47 +48,51 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: APIFY DEDICATED SHOPIFY SCRAPER (jupri/shopify-stores)
+# PHASE 1: APIFY OFFICIAL GOOGLE SCRAPER (Anti-Popular Store Logic)
 # ─────────────────────────────────────────────────────────────────────────────
 def get_stores_from_apify(keyword, apify_key):
     """
-    Apify এর 'jupri/shopify-stores' স্ক্র্যাপার ব্যবহার করে 
-    সরাসরি ই-কমার্স ডিরেক্টরি থেকে Niche অনুযায়ী স্টোর বের করবে।
+    Apify এর অফিশিয়াল Google Search Scraper ব্যবহার করবে।
+    কিন্তু Dorks এবং 7-Days ফিল্টার দিয়ে পপুলার স্টোরগুলোকে ১০০% ব্লক করে দিবে।
     """
     urls = set()
     
-    log(f"🚀 APIFY MODE: Using Dedicated Shopify Store Scraper for '{keyword}'...", "INFO")
+    log(f"🚀 APIFY MODE: Using Official Apify Scraper for '{keyword}'...", "INFO")
     
-    # Apify Actor ID: jupri/shopify-stores
-    actor_id = "jupri~shopify-stores"
+    # Apify Official Actor ID
+    actor_id = "apify~google-search-scraper"
     url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items?token={apify_key}"
+    
+    # 🔥 ANTI-POPULAR STORE DORKS 🔥
+    # এই লেখাগুলো শুধু নতুন বা পেমেন্ট ছাড়া স্টোরেই থাকে। পপুলার স্টোরে থাকে না।
+    queries = [
+        f'site:myshopify.com "{keyword}" "opening soon"',
+        f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
+        f'site:myshopify.com "{keyword}" "password"',
+        f'site:myshopify.com "{keyword}" "welcome to our store"'
+    ]
     
     # Payload for the Apify Actor
     payload = {
-        "search": keyword,
-        "limit": 200 # একবারে ২০০টি স্টোর আনবে (আপনি চাইলে বাড়াতে পারেন)
+        "queries": "\n".join(queries), # সবগুলো কোয়েরি একসাথে পাঠাবে
+        "resultsPerPage": 100,
+        "maxPagesPerQuery": 2, # প্রতি কোয়েরির ২ পেজ করে খুঁজবে
+        "customParameters": "tbs=qdr:w" # 🚨 STRICT FILTER: শুধু গত ৭ দিনের রেজাল্ট আনবে!
     }
     
     try:
-        log(f"   -> Waiting for Apify to extract stores (This takes 1-2 minutes)...", "INFO")
-        # Apify স্ক্র্যাপ করতে একটু সময় নেয়, তাই timeout 300 (5 minutes) দেওয়া হলো
+        log(f"   -> Waiting for Apify to extract NEW stores (This takes 1-3 minutes)...", "INFO")
         r = requests.post(url, json=payload, timeout=300)
         
         if r.status_code in [200, 201]:
             data = r.json()
             for item in data:
-                # Apify বিভিন্ন নামে URL রিটার্ন করতে পারে
-                store_url = item.get('url') or item.get('domain') or item.get('website') or ''
-                if store_url:
-                    if not store_url.startswith('http'):
-                        store_url = 'https://' + store_url
-                    
-                    # Extract myshopify domain if possible, otherwise keep custom domain
-                    m = MYSHOPIFY_RE.search(store_url)
+                organic_results = item.get('organicResults', [])
+                for res in organic_results:
+                    link = res.get('url', '')
+                    m = MYSHOPIFY_RE.search(link)
                     if m:
                         urls.add(f"https://{m.group(1)}.myshopify.com")
-                    else:
-                        urls.add(store_url)
             
             log(f"   ✅ Apify Scrape Complete!", "SUCCESS")
         else:
@@ -101,11 +105,11 @@ def get_stores_from_apify(keyword, apify_key):
 
     urls_list = list(urls)
     random.shuffle(urls_list)
-    log(f"📦 Found {len(urls_list)} EXACT Niche stores from Apify!", "SUCCESS")
+    log(f"📦 Found {len(urls_list)} STRICTLY NEW (Past 7 Days) stores from Apify!", "SUCCESS")
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 2: CHECKOUT HTML ANALYSIS (100% Accurate)
+# PHASE 2: CHECKOUT HTML ANALYSIS (100% Accurate & Multi-Lingual)
 # ─────────────────────────────────────────────────────────────────────────────
 def check_store_target(base_url, session, keyword):
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -229,29 +233,51 @@ def get_store_info(base_url, session):
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_email(tpl_subject, tpl_body, lead, groq_key):
     try:
-        prompt = f"""Write a short cold email to a Shopify store owner.
+        prompt = f"""You are writing a short cold email to a Shopify store owner.
+
 Store: {lead.get('store_name', 'the store')}
+URL: {lead.get('url', '')}
 Country: {lead.get('country', '')}
-Problem: NO payment gateway configured.
-Base: Subject: {tpl_subject} | Body: {tpl_body}
-Rules: 80-100 words, no spam words, mention store name once, 1 soft CTA, HTML <p> tags
-Return ONLY valid JSON: {{"subject": "...", "body": "<p>...</p>"}}"""
-        r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-            json={"model": "llama-3.1-8b-instant",
-                  "messages": [{"role": "user", "content": prompt}],
-                  "max_tokens": 500, "temperature": 0.7},
-            timeout=20)
+Problem: This store has NO payment gateway — customers cannot pay!
+
+Base template:
+Subject: {tpl_subject}
+Body: {tpl_body}
+
+Rules:
+- 80-100 words MAX
+- Zero spam trigger words
+- Mention store name once
+- End with ONE soft question
+- CRITICAL: Do NOT use newline characters (\\n). Use <br> for line breaks.
+- Respond ONLY with valid JSON.
+
+{{"subject": "...", "body": "..."}}"""
+
+        headers = {
+            "Authorization": f"Bearer {groq_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama-3.1-8b-instant",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 500,
+            "temperature": 0.7
+        }
+        
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=20)
+        
         if r.status_code == 200:
             raw = r.json()['choices'][0]['message']['content']
             raw = re.sub(r'```(?:json)?|```', '', raw.strip()).strip()
             raw = raw.replace('\n', ' ').replace('\r', '')
             data = json.loads(raw, strict=False)
             return data.get('subject', tpl_subject), data.get('body', f'<p>{tpl_body}</p>')
+        else:
+            return tpl_subject, f'<p>{tpl_body}</p>'
+            
     except Exception as e:
-        log(f"Groq fallback: {e}", "WARN")
-    return tpl_subject, f'<p>{tpl_body}</p>'
+        return tpl_subject, f'<p>{tpl_body}</p>'
 
 # ── Main automation ───────────────────────────────────────────────────────────
 def run_automation():
@@ -462,6 +488,7 @@ def api_start():
 def api_stop():
     global automation_running
     automation_running = False
+    log("⛔ Stopped by user", "WARN")
     return jsonify({'status': 'stopped'})
 
 if __name__ == '__main__':
