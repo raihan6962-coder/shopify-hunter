@@ -1,143 +1,150 @@
-import json
-import csv
-import io
-import threading
-import uuid
+import streamlit as st
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
 import time
-from flask import Flask, render_template, request, Response, jsonify, stream_with_context
-from hunter import run_hunt
+import re
 
-app = Flask(__name__)
+# --- Page Config ---
+st.set_page_config(page_title="Shopify Store Finder", page_icon="🕵️‍♂️", layout="wide")
+st.title("🕵️‍♂️ Advanced Shopify Store Finder (No API)")
+st.markdown("Find new Shopify stores without payment gateways using Brave Search.")
 
-# Active jobs store (in-memory)
-jobs = {}
+# --- User Inputs ---
+col1, col2 = st.columns(2)
+with col1:
+    keyword = st.text_input("Enter Keyword (e.g., Clothing, Pet):")
+with col2:
+    location = st.text_input("Enter Location (e.g., USA, London):")
 
-class HuntJob:
-    def __init__(self, job_id, keyword, location):
-        self.job_id = job_id
-        self.keyword = keyword
-        self.location = location
-        self.events = []
-        self.done = False
-        self.qualified = []
-        self.all_results = []
-        self.lock = threading.Lock()
+target_count = st.slider("Minimum Stores to Find:", 10, 50, 30)
 
-    def push(self, data):
-        with self.lock:
-            self.events.append(data)
+# --- Functions ---
+def get_brave_search_results(query, num_results):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+    }
+    urls = []
+    page = 0
+    
+    while len(urls) < num_results and page < 5: # Search up to 5 pages
+        # Brave search URL format
+        search_url = f"https://search.brave.com/search?q={query}&offset={page}"
+        try:
+            response = requests.get(search_url, headers=headers)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Find all links in Brave search results
+            for a in soup.find_all('a', href=True):
+                link = a['href']
+                if 'myshopify.com' in link and 'google.com' not in link and 'brave.com' not in link:
+                    # Clean URL to get the base store link
+                    base_url = link.split('/')[0] + "//" + link.split('/')[2]
+                    if base_url not in urls:
+                        urls.append(base_url)
+            page += 1
+            time.sleep(2) # Sleep to avoid getting blocked by Brave
+        except Exception as e:
+            st.error(f"Search Error: {e}")
+            break
+            
+    return urls[:num_results]
 
-    def get_events_from(self, index):
-        with self.lock:
-            return self.events[index:]
-
-
-def run_job(job: HuntJob):
-    def cb(data):
-        job.push(data)
-
+def analyze_store(url):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    store_data = {
+        "Store URL": url,
+        "Status": "Active",
+        "Payment Gateway Setup": "Yes",
+        "Email": "Not Found"
+    }
+    
     try:
-        qualified, all_results = run_hunt(
-            job.keyword, job.location,
-            progress_callback=cb,
-            max_stores=60
-        )
-        job.qualified = qualified
-        job.all_results = all_results
-    except Exception as e:
-        job.push({"phase": "error", "msg": str(e), "pct": 100})
-    finally:
-        job.done = True
-        job.push({"phase": "done", "pct": 100, "qualified_count": len(job.qualified)})
+        response = requests.get(url, headers=headers, timeout=10)
+        html = response.text.lower()
+        
+        # 1. Check if it's a new/password protected store
+        if "password" in html and "opening soon" in html:
+            store_data["Status"] = "Password Protected (Very New)"
+            store_data["Payment Gateway Setup"] = "No (Not Launched)"
+            return store_data
 
+        # 2. Check for Payment Gateway absence
+        # Shopify often shows these texts if payments aren't set up
+        no_payment_keywords = [
+            "this shop is not currently accepting payments",
+            "payment gateway not setup",
+            "store owner hasn't setup payments",
+            "checkout is disabled"
+        ]
+        
+        if any(kw in html for kw in no_payment_keywords):
+            store_data["Payment Gateway Setup"] = "No"
+        
+        # If it's a basic .myshopify.com domain, it's usually new and might not have payments
+        if ".myshopify.com" in url:
+            store_data["Status"] = "Uses Default Domain (Likely New)"
+            
+        # 3. Extract Email
+        emails = re.findall(r"[a-z0-9\.\-+_]+@[a-z0-9\.\-+_]+\.[a-z]+", html)
+        if emails:
+            # Filter out common image/shopify emails
+            valid_emails = [e for e in emails if "shopify" not in e and "png" not in e]
+            if valid_emails:
+                store_data["Email"] = valid_emails[0]
+                
+    except:
+        store_data["Status"] = "Failed to load"
+        
+    return store_data
 
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-
-@app.route("/start", methods=["POST"])
-def start():
-    data = request.json
-    keyword = data.get("keyword", "").strip()
-    location = data.get("location", "").strip()
+# --- Main Logic ---
+if st.button("🚀 Start Automation"):
     if not keyword or not location:
-        return jsonify({"error": "Keyword and location required"}), 400
-
-    job_id = str(uuid.uuid4())
-    job = HuntJob(job_id, keyword, location)
-    jobs[job_id] = job
-
-    thread = threading.Thread(target=run_job, args=(job,), daemon=True)
-    thread.start()
-
-    return jsonify({"job_id": job_id})
-
-
-@app.route("/stream/<job_id>")
-def stream(job_id):
-    job = jobs.get(job_id)
-    if not job:
-        return jsonify({"error": "Job not found"}), 404
-
-    def generate():
-        index = 0
-        while True:
-            events = job.get_events_from(index)
-            for ev in events:
-                yield f"data: {json.dumps(ev)}\n\n"
-                index += 1
-            if job.done and index >= len(job.events):
-                break
-            time.sleep(0.5)
-
-    return Response(stream_with_context(generate()), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-
-@app.route("/results/<job_id>")
-def results(job_id):
-    job = jobs.get(job_id)
-    if not job:
-        return jsonify({"error": "Not found"}), 404
-    return jsonify({
-        "qualified": job.qualified,
-        "total_scanned": len(job.all_results),
-        "done": job.done,
-    })
-
-
-@app.route("/export/<job_id>")
-def export_csv(job_id):
-    job = jobs.get(job_id)
-    if not job or not job.qualified:
-        return "No data", 404
-
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=[
-        "store_name", "url", "final_url", "emails", "phones",
-        "has_payment", "payment_detected", "status"
-    ])
-    writer.writeheader()
-    for r in job.qualified:
-        writer.writerow({
-            "store_name": r.get("store_name", ""),
-            "url": r.get("url", ""),
-            "final_url": r.get("final_url", ""),
-            "emails": ", ".join(r.get("emails", [])),
-            "phones": ", ".join(r.get("phones", [])),
-            "has_payment": r.get("has_payment", False),
-            "payment_detected": ", ".join(r.get("payment_detected", [])),
-            "status": r.get("status", ""),
-        })
-
-    output.seek(0)
-    return Response(
-        output.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=shopify_leads_{job_id[:8]}.csv"}
-    )
-
-
-if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+        st.warning("Please enter both Keyword and Location!")
+    else:
+        st.info("🔍 Searching Brave Search... Please wait (This takes time because we are not using APIs).")
+        
+        # Query: site:myshopify.com "keyword" "location"
+        search_query = f'site:myshopify.com "{keyword}" "{location}"'
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Step 1: Scrape URLs
+        status_text.text("Scraping search results from Brave...")
+        store_urls = get_brave_search_results(search_query, target_count)
+        
+        if not store_urls:
+            st.error("Could not find any stores. Brave might have blocked the request. Try again later.")
+        else:
+            st.success(f"Found {len(store_urls)} potential stores! Now analyzing them...")
+            
+            results = []
+            # Step 2: Analyze each store
+            for i, url in enumerate(store_urls):
+                status_text.text(f"Analyzing store {i+1}/{len(store_urls)}: {url}")
+                data = analyze_store(url)
+                results.append(data)
+                
+                # Update progress bar
+                progress_bar.progress((i + 1) / len(store_urls))
+                time.sleep(1) # Be polite to servers
+                
+            # Step 3: Display Results
+            status_text.text("✅ Automation Complete!")
+            df = pd.DataFrame(results)
+            
+            # Filter to show stores without payment gateways first
+            df = df.sort_values(by="Payment Gateway Setup", ascending=True)
+            
+            st.dataframe(df, use_container_width=True)
+            
+            # Step 4: CSV Download Button
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Data as CSV",
+                data=csv,
+                file_name=f'shopify_stores_{keyword}_{location}.csv',
+                mime='text/csv',
+            )
