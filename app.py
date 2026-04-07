@@ -9,8 +9,8 @@ import cloudscraper
 
 # --- Page Config ---
 st.set_page_config(page_title="Shopify Store Finder", page_icon="🔥", layout="wide")
-st.title("🔥 Ultra-Targeted Shopify Leads (Carpet Bombing Mode)")
-st.markdown("Forcing Brave Search to yield **150+ results** using multi-query expansion to find your exact leads.")
+st.title("🔥 Ultra-Targeted Shopify Leads (Unfinished Store Hack)")
+st.markdown("Targeting **Under-Construction & New** stores to guarantee NO Payment Gateways.")
 
 # --- User Inputs ---
 col1, col2 = st.columns(2)
@@ -29,31 +29,31 @@ def get_brave_search_results(keyword, location, num_results, status_text):
     
     urls = set()
     
-    # THE CARPET BOMBING HACK: 
-    # We use dozens of different search footprints to force Brave to give us NEW results every time.
+    # THE UNFINISHED STORE HACK:
+    # We removed the strict quotes around keyword/location to massively increase results.
+    # We added footprints that ONLY new/unfinished stores have (No payments!).
     modifiers = [
-        '"not currently accepting payments"', # The golden nugget
-        '"contact us"', 
-        '"powered by shopify"', 
-        '"2024"', 
-        '"2025"',
-        '"gmail.com" OR "yahoo.com"',
-        '"shipping policy"',
-        '"refund policy"',
-        '"about us"',
-        '"track order"',
-        'a', 'e', 'i', 'o', 'u' # Alphabet hack as backup
+        '"not currently accepting payments"',
+        '"welcome to our store"', # Default Shopify text
+        '"test store"',
+        '"123 fake street"', # Default Shopify address
+        '"example.com"', # Default email domain
+        '"powered by shopify" "2024"',
+        '"powered by shopify" "2025"',
+        'contact us',
+        'shipping',
+        'returns'
     ]
     
     for mod in modifiers:
         if len(urls) >= num_results:
             break
             
-        query = f'site:myshopify.com "{keyword}" "{location}" {mod}'
-        status_text.text(f"Bypassing limits... Searching: {query}")
+        # Notice: No strict quotes around keyword and location anymore!
+        query = f'site:myshopify.com {keyword} {location} {mod}'
+        status_text.text(f"Scraping: {query} (Found: {len(urls)} so far...)")
         
-        # Search top 3 pages for EACH modifier
-        for page in range(3): 
+        for page in range(4): # Search 4 pages per modifier
             if len(urls) >= num_results:
                 break
                 
@@ -78,9 +78,9 @@ def get_brave_search_results(keyword, location, num_results, status_text):
                                 continue
                                 
                     if found_in_page == 0:
-                        break # Move to next page/modifier if empty
+                        break 
                         
-                time.sleep(1.5) # Anti-block delay
+                time.sleep(1.5) 
             except:
                 break
 
@@ -100,20 +100,18 @@ def analyze_store(url):
         response = scraper.get(url, timeout=10)
         html = response.text.lower()
         
-        # Filter out Dead Stores
         if "this shop is currently unavailable" in html or "shop is unavailable" in html:
             store_data["Status"] = "Dead Store"
             return store_data
 
-        # Filter out Password Protected Stores
         if "password" in html and ("opening soon" in html or "enter store using password" in html):
             store_data["Status"] = "Password Protected (Skipped)"
             return store_data
             
-        # Extract Email from Homepage
+        # Extract Email
         emails = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", html)
         if emails:
-            bad_words = ['shopify', 'png', 'jpg', 'jpeg', 'w3.org', 'example', 'domain', 'sentry', 'test']
+            bad_words = ['shopify', 'png', 'jpg', 'jpeg', 'w3.org', 'domain', 'sentry']
             valid_emails = [e for e in emails if not any(bw in e.lower() for bw in bad_words)]
             if valid_emails:
                 store_data["Email"] = max(set(valid_emails), key=valid_emails.count)
@@ -122,14 +120,13 @@ def analyze_store(url):
         strict_no_payment_phrases = [
             "this shop is not currently accepting payments",
             "this store can’t accept payments right now",
-            "payment processing is currently unavailable"
+            "payment processing is currently unavailable",
+            "checkout is disabled"
         ]
         
-        # Check homepage first
         if any(phrase in html for phrase in strict_no_payment_phrases):
             store_data["Payment Gateway Setup"] = "No"
         else:
-            # Check the /cart page silently
             try:
                 cart_url = url + "/cart"
                 cart_response = scraper.get(cart_url, timeout=5)
@@ -150,7 +147,7 @@ if st.button("🚀 Start Automation"):
     if not keyword or not location:
         st.warning("Please enter both Keyword and Location!")
     else:
-        st.info("🔍 Initializing Carpet Bombing Search... Please wait.")
+        st.info("🔍 Initializing Unfinished Store Hack... Please wait.")
         
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -161,7 +158,7 @@ if st.button("🚀 Start Automation"):
         if not store_urls:
             st.error("Brave Search blocked the request. Try waiting 1 minute.")
         else:
-            st.success(f"🔥 Successfully bypassed limits! Found {len(store_urls)} unique stores. Now deep-scanning...")
+            st.success(f"🔥 BOOM! Bypassed the limit! Found {len(store_urls)} unique stores. Now deep-scanning...")
             
             results = []
             # Step 2: Analyze each store
@@ -181,6 +178,7 @@ if st.button("🚀 Start Automation"):
             perfect_leads = df[
                 (df["Payment Gateway Setup"] == "No") & 
                 (df["Email"] != "Not Found") &
+                (df["Email"] != "example@example.com") & # Filter out default fake emails
                 (df["Status"] != "Password Protected (Skipped)") &
                 (df["Status"] != "Dead Store") &
                 (df["Status"] != "Failed to load")
@@ -190,9 +188,9 @@ if st.button("🚀 Start Automation"):
             st.markdown("### 🎯 YOUR PERFECT LEADS (Live Store + No Payment + Has Email)")
             
             if perfect_leads.empty:
-                st.error(f"⚠️ We deep-scanned {len(store_urls)} stores. Many had emails, but ALL of them had active payment gateways. Try a different keyword (e.g., 'Jewelry' or 'Toys').")
+                st.error(f"⚠️ We deep-scanned {len(store_urls)} stores. Try changing the keyword to something broader (e.g., just 'Fashion' instead of 'Clothing').")
             else:
-                st.success(f"🎯 BOOM! Found {len(perfect_leads)} PERFECT leads matching your exact requirements!")
+                st.success(f"🎯 SUCCESS! Found {len(perfect_leads)} PERFECT leads matching your exact requirements!")
                 st.dataframe(perfect_leads, use_container_width=True)
                 
                 csv_perfect = perfect_leads.to_csv(index=False).encode('utf-8')
