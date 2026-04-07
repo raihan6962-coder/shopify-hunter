@@ -9,8 +9,8 @@ import cloudscraper
 
 # --- Page Config ---
 st.set_page_config(page_title="Shopify Store Finder", page_icon="🎯", layout="wide")
-st.title("🎯 Advanced Shopify Store Finder")
-st.markdown("Finding **Highly Targeted** Shopify stores using **Brave Search** (Anti-Bot Bypass Method).")
+st.title("🎯 Ultra-Targeted Shopify Leads")
+st.markdown("Strictly finding stores with **NO Payment Gateway** AND **Valid Emails**.")
 
 # --- User Inputs ---
 col1, col2 = st.columns(2)
@@ -24,19 +24,15 @@ target_count = st.slider("Minimum Stores to Scrape & Analyze:", 10, 100, 50)
 # --- Functions ---
 def get_search_results(query, num_results, status_text):
     scraper = cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'windows',
-            'desktop': True
-        }
+        browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
     )
     
     urls = []
     page = 0
     
-    # --- TRY 1: BRAVE SEARCH ---
-    status_text.text("Attempting to bypass Brave Search bot protection...")
-    while len(urls) < num_results and page < 5:
+    # Increased page limit to 15 to find MORE raw stores
+    status_text.text("Executing Advanced Search Query to find stores without payment gateways...")
+    while len(urls) < num_results and page < 15:
         try:
             brave_url = f"https://search.brave.com/search?q={query}&offset={page}"
             response = scraper.get(brave_url, timeout=15)
@@ -54,13 +50,13 @@ def get_search_results(query, num_results, status_text):
                         except:
                             continue
             page += 1
-            time.sleep(2) 
+            time.sleep(1) 
         except:
             break
 
-    # --- TRY 2: FALLBACK ---
-    if len(urls) == 0:
-        status_text.text("Brave blocked the Cloud Server. Using alternative secure engine...")
+    # Fallback to DDG if Brave blocks
+    if len(urls) < 5:
+        status_text.text("Expanding search using alternative secure engine...")
         try:
             ddg_url = "https://html.duckduckgo.com/html/"
             response = scraper.post(ddg_url, data={'q': query}, timeout=15)
@@ -93,32 +89,33 @@ def analyze_store(url):
         response = scraper.get(url, timeout=10)
         html = response.text.lower()
         
-        # 1. Check if it's a new/password protected store
-        if "password" in html and "opening soon" in html:
-            store_data["Status"] = "Password Protected (Very New)"
-            store_data["Payment Gateway Setup"] = "No (Not Launched)"
-            return store_data
-
-        # 2. Check for Payment Gateway absence
+        # 1. Aggressive Payment Gateway Check
         no_payment_keywords = [
             "this shop is not currently accepting payments",
             "payment gateway not setup",
             "store owner hasn't setup payments",
-            "checkout is disabled"
+            "checkout is disabled",
+            "payment processing is currently unavailable",
+            "opening soon",
+            "password"
         ]
         
         if any(kw in html for kw in no_payment_keywords):
             store_data["Payment Gateway Setup"] = "No"
+            if "opening soon" in html or "password" in html:
+                store_data["Status"] = "Password Protected (Very New)"
         
-        if ".myshopify.com" in url:
-            store_data["Status"] = "Uses Default Domain (Likely New)"
-            
-        # 3. Extract Email
-        emails = re.findall(r"[a-z0-9\.\-+_]+@[a-z0-9\.\-+_]+\.[a-z]+", html)
+        # 2. Advanced Email Extraction (Better Regex)
+        # Finds emails even if they are hidden in code
+        emails = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", html)
         if emails:
-            valid_emails = [e for e in emails if "shopify" not in e and "png" not in e and "jpg" not in e and "w3.org" not in e]
+            # Filter out fake/system emails
+            bad_words = ['shopify', 'png', 'jpg', 'jpeg', 'w3.org', 'example', 'domain', 'sentry']
+            valid_emails = [e for e in emails if not any(bw in e.lower() for bw in bad_words)]
+            
             if valid_emails:
-                store_data["Email"] = valid_emails[0]
+                # Get the most common email found on the page
+                store_data["Email"] = max(set(valid_emails), key=valid_emails.count)
                 
     except:
         store_data["Status"] = "Failed to load"
@@ -130,9 +127,10 @@ if st.button("🚀 Start Automation"):
     if not keyword or not location:
         st.warning("Please enter both Keyword and Location!")
     else:
-        st.info("🔍 Initializing Anti-Bot Scraper... Please wait.")
+        st.info("🔍 Initializing Strict Lead Finder... Please wait.")
         
-        search_query = f'site:myshopify.com "{keyword}" "{location}"'
+        # THE SECRET SAUCE: Forcing search engine to find broken/new stores directly
+        search_query = f'site:myshopify.com "{keyword}" "{location}" ("not currently accepting payments" OR "opening soon")'
         
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -141,9 +139,9 @@ if st.button("🚀 Start Automation"):
         store_urls = get_search_results(search_query, target_count, status_text)
         
         if not store_urls:
-            st.error("Could not find stores. The keyword might be too specific or all search engines blocked the server.")
+            st.error("Could not find stores. Try a broader keyword (e.g., just 'Clothing' instead of 'Men Clothing').")
         else:
-            st.success(f"Found {len(store_urls)} stores to analyze! Please wait...")
+            st.success(f"Found {len(store_urls)} highly potential stores! Extracting Emails & Verifying Payments...")
             
             results = []
             # Step 2: Analyze each store
@@ -157,13 +155,12 @@ if st.button("🚀 Start Automation"):
                 time.sleep(1)
                 
             # Step 3: Display STRICTLY FILTERED Results
-            status_text.text("✅ Automation Complete! Filtering your specific leads...")
+            status_text.text("✅ Automation Complete! Applying your strict filters...")
             df = pd.DataFrame(results)
             
-            # --- STRICT FILTERING LOGIC ---
-            # Only keep stores where Payment Gateway is "No" AND Email is NOT "Not Found"
+            # --- STRICT FILTERING LOGIC (YOUR REQUIREMENT) ---
             perfect_leads = df[
-                (df["Payment Gateway Setup"].str.contains("No", na=False)) & 
+                (df["Payment Gateway Setup"] == "No") & 
                 (df["Email"] != "Not Found")
             ]
             
@@ -171,15 +168,15 @@ if st.button("🚀 Start Automation"):
             st.markdown("### 🎯 YOUR TARGETED LEADS")
             
             if perfect_leads.empty:
-                st.error("⚠️ We scraped the stores, but none of them matched your strict requirements (No Payment Gateway + Has Email). Try increasing the slider to 100 or changing the keyword.")
+                st.error("⚠️ We scanned the stores, but none had BOTH 'No Payment Gateway' AND a 'Public Email'. Try increasing the slider to 100 or use a different keyword/location.")
             else:
-                st.success(f"🎯 Successfully extracted {len(perfect_leads)} leads matching your exact requirements!")
+                st.success(f"🎯 BOOM! Successfully extracted {len(perfect_leads)} leads matching your EXACT requirements!")
                 st.dataframe(perfect_leads, use_container_width=True)
                 
                 # CSV Download ONLY for Perfect Leads
                 csv_perfect = perfect_leads.to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    label="📥 Download Leads (CSV)",
+                    label="📥 Download Perfect Leads (CSV)",
                     data=csv_perfect,
                     file_name=f'targeted_leads_{keyword}_{location}.csv',
                     mime='text/csv',
