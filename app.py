@@ -4,11 +4,12 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import time
 import re
+from urllib.parse import urlparse
 
 # --- Page Config ---
 st.set_page_config(page_title="Shopify Store Finder", page_icon="🕵️‍♂️", layout="wide")
-st.title("🕵️‍♂️ Advanced Shopify Store Finder (No API)")
-st.markdown("Find new Shopify stores without payment gateways using Brave Search.")
+st.title("🕵️‍♂️ Advanced Shopify Store Finder")
+st.markdown("Finding new Shopify stores using **Brave Search** (Via Free Public API).")
 
 # --- User Inputs ---
 col1, col2 = st.columns(2)
@@ -20,38 +21,58 @@ with col2:
 target_count = st.slider("Minimum Stores to Find:", 10, 50, 30)
 
 # --- Functions ---
-def get_brave_search_results(query, num_results):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-    }
-    urls = []
-    page = 0
+def get_brave_results_free_api(query, num_results):
+    """
+    Using SearXNG Public APIs to get Brave Search results for FREE.
+    No API key required.
+    """
+    # List of free public API servers (if one is busy, it tries the next)
+    public_apis = [
+        "https://searx.be",
+        "https://searx.tiekoetter.com",
+        "https://paulgo.io",
+        "https://search.mdosch.de"
+    ]
     
-    while len(urls) < num_results and page < 5: # Search up to 5 pages
-        # Brave search URL format
-        search_url = f"https://search.brave.com/search?q={query}&offset={page}"
+    urls = []
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    
+    for api_server in public_apis:
         try:
-            response = requests.get(search_url, headers=headers)
-            soup = BeautifulSoup(response.text, 'html.parser')
+            # engines=brave forces the API to fetch results ONLY from Brave Search
+            api_url = f"{api_server}/search?q={query}&engines=brave&format=json"
             
-            # Find all links in Brave search results
-            for a in soup.find_all('a', href=True):
-                link = a['href']
-                if 'myshopify.com' in link and 'google.com' not in link and 'brave.com' not in link:
-                    # Clean URL to get the base store link
-                    base_url = link.split('/')[0] + "//" + link.split('/')[2]
-                    if base_url not in urls:
-                        urls.append(base_url)
-            page += 1
-            time.sleep(2) # Sleep to avoid getting blocked by Brave
+            response = requests.get(api_url, headers=headers, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Extract results from JSON
+                for result in data.get('results', []):
+                    link = result.get('url', '')
+                    
+                    if 'myshopify.com' in link:
+                        try:
+                            # Clean the URL to get only the store domain
+                            parsed_uri = urlparse(link)
+                            base_url = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
+                            
+                            if base_url not in urls:
+                                urls.append(base_url)
+                        except:
+                            continue
+                            
+                # If we found URLs, stop checking other servers
+                if len(urls) > 0:
+                    break 
+                    
         except Exception as e:
-            st.error(f"Search Error: {e}")
-            break
+            continue # If this server fails, try the next one in the list
             
     return urls[:num_results]
 
 def analyze_store(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     store_data = {
         "Store URL": url,
         "Status": "Active",
@@ -70,7 +91,6 @@ def analyze_store(url):
             return store_data
 
         # 2. Check for Payment Gateway absence
-        # Shopify often shows these texts if payments aren't set up
         no_payment_keywords = [
             "this shop is not currently accepting payments",
             "payment gateway not setup",
@@ -81,15 +101,13 @@ def analyze_store(url):
         if any(kw in html for kw in no_payment_keywords):
             store_data["Payment Gateway Setup"] = "No"
         
-        # If it's a basic .myshopify.com domain, it's usually new and might not have payments
         if ".myshopify.com" in url:
             store_data["Status"] = "Uses Default Domain (Likely New)"
             
         # 3. Extract Email
         emails = re.findall(r"[a-z0-9\.\-+_]+@[a-z0-9\.\-+_]+\.[a-z]+", html)
         if emails:
-            # Filter out common image/shopify emails
-            valid_emails = [e for e in emails if "shopify" not in e and "png" not in e]
+            valid_emails = [e for e in emails if "shopify" not in e and "png" not in e and "jpg" not in e]
             if valid_emails:
                 store_data["Email"] = valid_emails[0]
                 
@@ -103,22 +121,22 @@ if st.button("🚀 Start Automation"):
     if not keyword or not location:
         st.warning("Please enter both Keyword and Location!")
     else:
-        st.info("🔍 Searching Brave Search... Please wait (This takes time because we are not using APIs).")
+        st.info("🔍 Fetching results from Brave Search (via Free API)... Please wait.")
         
-        # Query: site:myshopify.com "keyword" "location"
+        # Query format
         search_query = f'site:myshopify.com "{keyword}" "{location}"'
         
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # Step 1: Scrape URLs
-        status_text.text("Scraping search results from Brave...")
-        store_urls = get_brave_search_results(search_query, target_count)
+        # Step 1: Get URLs via Free API
+        status_text.text("Connecting to Brave Search...")
+        store_urls = get_brave_results_free_api(search_query, target_count)
         
         if not store_urls:
-            st.error("Could not find any stores. Brave might have blocked the request. Try again later.")
+            st.error("Could not find stores. The keyword might be too specific or servers are busy. Try a different keyword.")
         else:
-            st.success(f"Found {len(store_urls)} potential stores! Now analyzing them...")
+            st.success(f"Found {len(store_urls)} potential stores from Brave! Now analyzing them...")
             
             results = []
             # Step 2: Analyze each store
