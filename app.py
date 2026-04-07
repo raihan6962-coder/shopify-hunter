@@ -8,9 +8,9 @@ from urllib.parse import urlparse
 import cloudscraper
 
 # --- Page Config ---
-st.set_page_config(page_title="Shopify Store Finder", page_icon="🕵️‍♂️", layout="wide")
-st.title("🕵️‍♂️ Advanced Shopify Store Finder")
-st.markdown("Finding new Shopify stores using **Brave Search** (Anti-Bot Bypass Method).")
+st.set_page_config(page_title="Shopify Store Finder", page_icon="🎯", layout="wide")
+st.title("🎯 Advanced Shopify Store Finder")
+st.markdown("Finding **Highly Targeted** Shopify stores using **Brave Search** (Anti-Bot Bypass Method).")
 
 # --- User Inputs ---
 col1, col2 = st.columns(2)
@@ -19,15 +19,10 @@ with col1:
 with col2:
     location = st.text_input("Enter Location (e.g., USA, London):")
 
-target_count = st.slider("Minimum Stores to Find:", 10, 50, 30)
+target_count = st.slider("Minimum Stores to Scrape & Analyze:", 10, 100, 50)
 
 # --- Functions ---
 def get_search_results(query, num_results, status_text):
-    """
-    Uses Cloudscraper to bypass Brave's bot protection.
-    If Brave strictly blocks the Cloud IP, it automatically falls back to a safe alternative.
-    """
-    # Create a scraper that mimics a real Windows Chrome browser
     scraper = cloudscraper.create_scraper(
         browser={
             'browser': 'chrome',
@@ -41,7 +36,7 @@ def get_search_results(query, num_results, status_text):
     
     # --- TRY 1: BRAVE SEARCH ---
     status_text.text("Attempting to bypass Brave Search bot protection...")
-    while len(urls) < num_results and page < 3:
+    while len(urls) < num_results and page < 5:
         try:
             brave_url = f"https://search.brave.com/search?q={query}&offset={page}"
             response = scraper.get(brave_url, timeout=15)
@@ -59,11 +54,11 @@ def get_search_results(query, num_results, status_text):
                         except:
                             continue
             page += 1
-            time.sleep(2) # Sleep to act like a human
+            time.sleep(2) 
         except:
             break
 
-    # --- TRY 2: FALLBACK (If Brave completely blocks Railway IP) ---
+    # --- TRY 2: FALLBACK ---
     if len(urls) == 0:
         status_text.text("Brave blocked the Cloud Server. Using alternative secure engine...")
         try:
@@ -86,7 +81,6 @@ def get_search_results(query, num_results, status_text):
     return urls[:num_results]
 
 def analyze_store(url):
-    # Using cloudscraper here as well to bypass Shopify's bot protection
     scraper = cloudscraper.create_scraper()
     store_data = {
         "Store URL": url,
@@ -149,7 +143,7 @@ if st.button("🚀 Start Automation"):
         if not store_urls:
             st.error("Could not find stores. The keyword might be too specific or all search engines blocked the server.")
         else:
-            st.success(f"Found {len(store_urls)} potential stores! Now analyzing them...")
+            st.success(f"Found {len(store_urls)} stores to analyze! Please wait...")
             
             results = []
             # Step 2: Analyze each store
@@ -162,20 +156,31 @@ if st.button("🚀 Start Automation"):
                 progress_bar.progress((i + 1) / len(store_urls))
                 time.sleep(1)
                 
-            # Step 3: Display Results
-            status_text.text("✅ Automation Complete!")
+            # Step 3: Display STRICTLY FILTERED Results
+            status_text.text("✅ Automation Complete! Filtering your specific leads...")
             df = pd.DataFrame(results)
             
-            # Filter to show stores without payment gateways first
-            df = df.sort_values(by="Payment Gateway Setup", ascending=True)
+            # --- STRICT FILTERING LOGIC ---
+            # Only keep stores where Payment Gateway is "No" AND Email is NOT "Not Found"
+            perfect_leads = df[
+                (df["Payment Gateway Setup"].str.contains("No", na=False)) & 
+                (df["Email"] != "Not Found")
+            ]
             
-            st.dataframe(df, use_container_width=True)
+            st.markdown("---")
+            st.markdown("### 🎯 YOUR TARGETED LEADS")
             
-            # Step 4: CSV Download Button
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Data as CSV",
-                data=csv,
-                file_name=f'shopify_stores_{keyword}_{location}.csv',
-                mime='text/csv',
-            )
+            if perfect_leads.empty:
+                st.error("⚠️ We scraped the stores, but none of them matched your strict requirements (No Payment Gateway + Has Email). Try increasing the slider to 100 or changing the keyword.")
+            else:
+                st.success(f"🎯 Successfully extracted {len(perfect_leads)} leads matching your exact requirements!")
+                st.dataframe(perfect_leads, use_container_width=True)
+                
+                # CSV Download ONLY for Perfect Leads
+                csv_perfect = perfect_leads.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Leads (CSV)",
+                    data=csv_perfect,
+                    file_name=f'targeted_leads_{keyword}_{location}.csv',
+                    mime='text/csv',
+                )
