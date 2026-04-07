@@ -9,8 +9,8 @@ import cloudscraper
 
 # --- Page Config ---
 st.set_page_config(page_title="Shopify Store Finder", page_icon="🔥", layout="wide")
-st.title("🔥 Ultra-Targeted Shopify Leads (Deep Scrape)")
-st.markdown("Bypassing Brave limits & Deep scanning `/cart` pages for **NO Payment Gateway** + **Valid Emails**.")
+st.title("🔥 Ultra-Targeted Shopify Leads (Carpet Bombing Mode)")
+st.markdown("Forcing Brave Search to yield **150+ results** using multi-query expansion to find your exact leads.")
 
 # --- User Inputs ---
 col1, col2 = st.columns(2)
@@ -19,7 +19,7 @@ with col1:
 with col2:
     location = st.text_input("Enter Location (e.g., USA, London):")
 
-target_count = st.slider("Minimum Stores to Scrape & Analyze:", 10, 200, 150)
+target_count = st.slider("Minimum Stores to Scrape & Analyze:", 50, 300, 150)
 
 # --- Functions ---
 def get_brave_search_results(keyword, location, num_results, status_text):
@@ -29,24 +29,31 @@ def get_brave_search_results(keyword, location, num_results, status_text):
     
     urls = set()
     
-    # ALPHABET HACK: Forcing Brave to give MORE than 36 results by changing the query slightly
-    base_queries = [
-        f'site:myshopify.com "{keyword}" "{location}" "not currently accepting payments"',
-        f'site:myshopify.com "{keyword}" "{location}" "@gmail.com" OR "@yahoo.com"',
-        f'site:myshopify.com "{keyword}" "{location}"'
+    # THE CARPET BOMBING HACK: 
+    # We use dozens of different search footprints to force Brave to give us NEW results every time.
+    modifiers = [
+        '"not currently accepting payments"', # The golden nugget
+        '"contact us"', 
+        '"powered by shopify"', 
+        '"2024"', 
+        '"2025"',
+        '"gmail.com" OR "yahoo.com"',
+        '"shipping policy"',
+        '"refund policy"',
+        '"about us"',
+        '"track order"',
+        'a', 'e', 'i', 'o', 'u' # Alphabet hack as backup
     ]
     
-    # Adding vowel variations to bypass pagination limits
-    for letter in ['a', 'e', 'i', 'o', 'u']:
-        base_queries.append(f'site:myshopify.com "{keyword}" "{location}" {letter}')
-        
-    for query in base_queries:
+    for mod in modifiers:
         if len(urls) >= num_results:
             break
             
-        status_text.text(f"Bypassing limits... Searching Brave for: {query}")
+        query = f'site:myshopify.com "{keyword}" "{location}" {mod}'
+        status_text.text(f"Bypassing limits... Searching: {query}")
         
-        for page in range(5): # Search 5 pages per variation
+        # Search top 3 pages for EACH modifier
+        for page in range(3): 
             if len(urls) >= num_results:
                 break
                 
@@ -71,7 +78,7 @@ def get_brave_search_results(keyword, location, num_results, status_text):
                                 continue
                                 
                     if found_in_page == 0:
-                        break # Move to next query if this page is empty
+                        break # Move to next page/modifier if empty
                         
                 time.sleep(1.5) # Anti-block delay
             except:
@@ -98,7 +105,7 @@ def analyze_store(url):
             store_data["Status"] = "Dead Store"
             return store_data
 
-        # Filter out Password Protected Stores (AS YOU REQUESTED)
+        # Filter out Password Protected Stores
         if "password" in html and ("opening soon" in html or "enter store using password" in html):
             store_data["Status"] = "Password Protected (Skipped)"
             return store_data
@@ -111,19 +118,18 @@ def analyze_store(url):
             if valid_emails:
                 store_data["Email"] = max(set(valid_emails), key=valid_emails.count)
 
-        # STEP 2: DEEP CART SCAN (The Secret Sauce)
-        # If it's a live store, the payment error is usually on the cart/checkout page!
+        # STEP 2: DEEP CART SCAN
         strict_no_payment_phrases = [
             "this shop is not currently accepting payments",
             "this store can’t accept payments right now",
             "payment processing is currently unavailable"
         ]
         
-        # Check homepage first just in case
+        # Check homepage first
         if any(phrase in html for phrase in strict_no_payment_phrases):
             store_data["Payment Gateway Setup"] = "No"
         else:
-            # If not on homepage, silently check the /cart page!
+            # Check the /cart page silently
             try:
                 cart_url = url + "/cart"
                 cart_response = scraper.get(cart_url, timeout=5)
@@ -144,7 +150,7 @@ if st.button("🚀 Start Automation"):
     if not keyword or not location:
         st.warning("Please enter both Keyword and Location!")
     else:
-        st.info("🔍 Initializing Deep Scraper... Please wait.")
+        st.info("🔍 Initializing Carpet Bombing Search... Please wait.")
         
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -155,7 +161,7 @@ if st.button("🚀 Start Automation"):
         if not store_urls:
             st.error("Brave Search blocked the request. Try waiting 1 minute.")
         else:
-            st.success(f"🔥 Successfully bypassed limits! Found {len(store_urls)} stores. Now deep-scanning /cart pages...")
+            st.success(f"🔥 Successfully bypassed limits! Found {len(store_urls)} unique stores. Now deep-scanning...")
             
             results = []
             # Step 2: Analyze each store
@@ -172,10 +178,6 @@ if st.button("🚀 Start Automation"):
             df = pd.DataFrame(results)
             
             # --- STRICT FILTERING LOGIC ---
-            # 1. No Payment Gateway
-            # 2. Has Email
-            # 3. NOT Password Protected
-            # 4. NOT Dead
             perfect_leads = df[
                 (df["Payment Gateway Setup"] == "No") & 
                 (df["Email"] != "Not Found") &
