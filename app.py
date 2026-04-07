@@ -5,11 +5,12 @@ import pandas as pd
 import time
 import re
 from urllib.parse import urlparse
+import cloudscraper
 
 # --- Page Config ---
 st.set_page_config(page_title="Shopify Store Finder", page_icon="🕵️‍♂️", layout="wide")
 st.title("🕵️‍♂️ Advanced Shopify Store Finder")
-st.markdown("Finding new Shopify stores using **Brave Search** (Via Free Public API).")
+st.markdown("Finding new Shopify stores using **Brave Search** (Anti-Bot Bypass Method).")
 
 # --- User Inputs ---
 col1, col2 = st.columns(2)
@@ -21,58 +22,72 @@ with col2:
 target_count = st.slider("Minimum Stores to Find:", 10, 50, 30)
 
 # --- Functions ---
-def get_brave_results_free_api(query, num_results):
+def get_search_results(query, num_results, status_text):
     """
-    Using SearXNG Public APIs to get Brave Search results for FREE.
-    No API key required.
+    Uses Cloudscraper to bypass Brave's bot protection.
+    If Brave strictly blocks the Cloud IP, it automatically falls back to a safe alternative.
     """
-    # List of free public API servers (if one is busy, it tries the next)
-    public_apis = [
-        "https://searx.be",
-        "https://searx.tiekoetter.com",
-        "https://paulgo.io",
-        "https://search.mdosch.de"
-    ]
+    # Create a scraper that mimics a real Windows Chrome browser
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
     
     urls = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    page = 0
     
-    for api_server in public_apis:
+    # --- TRY 1: BRAVE SEARCH ---
+    status_text.text("Attempting to bypass Brave Search bot protection...")
+    while len(urls) < num_results and page < 3:
         try:
-            # engines=brave forces the API to fetch results ONLY from Brave Search
-            api_url = f"{api_server}/search?q={query}&engines=brave&format=json"
-            
-            response = requests.get(api_url, headers=headers, timeout=15)
+            brave_url = f"https://search.brave.com/search?q={query}&offset={page}"
+            response = scraper.get(brave_url, timeout=15)
             
             if response.status_code == 200:
-                data = response.json()
-                
-                # Extract results from JSON
-                for result in data.get('results', []):
-                    link = result.get('url', '')
-                    
-                    if 'myshopify.com' in link:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                for a in soup.find_all('a', href=True):
+                    link = a['href']
+                    if 'myshopify.com' in link and 'brave.com' not in link:
                         try:
-                            # Clean the URL to get only the store domain
                             parsed_uri = urlparse(link)
                             base_url = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
-                            
                             if base_url not in urls:
                                 urls.append(base_url)
                         except:
                             continue
-                            
-                # If we found URLs, stop checking other servers
-                if len(urls) > 0:
-                    break 
-                    
+            page += 1
+            time.sleep(2) # Sleep to act like a human
+        except:
+            break
+
+    # --- TRY 2: FALLBACK (If Brave completely blocks Railway IP) ---
+    if len(urls) == 0:
+        status_text.text("Brave blocked the Cloud Server. Using alternative secure engine...")
+        try:
+            ddg_url = "https://html.duckduckgo.com/html/"
+            response = scraper.post(ddg_url, data={'q': query}, timeout=15)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            for a in soup.find_all('a', href=True):
+                link = a['href']
+                if 'myshopify.com' in link and link.startswith('http'):
+                    try:
+                        parsed_uri = urlparse(link)
+                        base_url = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
+                        if base_url not in urls and 'duckduckgo' not in base_url:
+                            urls.append(base_url)
+                    except:
+                        continue
         except Exception as e:
-            continue # If this server fails, try the next one in the list
-            
+            pass
+
     return urls[:num_results]
 
 def analyze_store(url):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    # Using cloudscraper here as well to bypass Shopify's bot protection
+    scraper = cloudscraper.create_scraper()
     store_data = {
         "Store URL": url,
         "Status": "Active",
@@ -81,7 +96,7 @@ def analyze_store(url):
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = scraper.get(url, timeout=10)
         html = response.text.lower()
         
         # 1. Check if it's a new/password protected store
@@ -107,7 +122,7 @@ def analyze_store(url):
         # 3. Extract Email
         emails = re.findall(r"[a-z0-9\.\-+_]+@[a-z0-9\.\-+_]+\.[a-z]+", html)
         if emails:
-            valid_emails = [e for e in emails if "shopify" not in e and "png" not in e and "jpg" not in e]
+            valid_emails = [e for e in emails if "shopify" not in e and "png" not in e and "jpg" not in e and "w3.org" not in e]
             if valid_emails:
                 store_data["Email"] = valid_emails[0]
                 
@@ -121,22 +136,20 @@ if st.button("🚀 Start Automation"):
     if not keyword or not location:
         st.warning("Please enter both Keyword and Location!")
     else:
-        st.info("🔍 Fetching results from Brave Search (via Free API)... Please wait.")
+        st.info("🔍 Initializing Anti-Bot Scraper... Please wait.")
         
-        # Query format
         search_query = f'site:myshopify.com "{keyword}" "{location}"'
         
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # Step 1: Get URLs via Free API
-        status_text.text("Connecting to Brave Search...")
-        store_urls = get_brave_results_free_api(search_query, target_count)
+        # Step 1: Get URLs
+        store_urls = get_search_results(search_query, target_count, status_text)
         
         if not store_urls:
-            st.error("Could not find stores. The keyword might be too specific or servers are busy. Try a different keyword.")
+            st.error("Could not find stores. The keyword might be too specific or all search engines blocked the server.")
         else:
-            st.success(f"Found {len(store_urls)} potential stores from Brave! Now analyzing them...")
+            st.success(f"Found {len(store_urls)} potential stores! Now analyzing them...")
             
             results = []
             # Step 2: Analyze each store
@@ -147,7 +160,7 @@ if st.button("🚀 Start Automation"):
                 
                 # Update progress bar
                 progress_bar.progress((i + 1) / len(store_urls))
-                time.sleep(1) # Be polite to servers
+                time.sleep(1)
                 
             # Step 3: Display Results
             status_text.text("✅ Automation Complete!")
